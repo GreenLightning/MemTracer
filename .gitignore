@@ -1,7 +1,5 @@
-/bin
 /data
-/nvbit/core
-/nvbit/mem_trace/bin
+/core
 
 .DS_Store
 *.sublime-workspace

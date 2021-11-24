@@ -1,13 +1,12 @@
 find_path(NVBIT_INCLUDE_DIR nvbit.h
-          HINTS
-          "${CMAKE_CURRENT_SOURCE_DIR}/../core"
-          PATH_SUFFIXES libraw
-         )
+	HINTS
+	"${CMAKE_SOURCE_DIR}/core"
+	)
 
 find_library(NVBIT_LIBRARIES NAMES nvbit
-             HINTS
-             "${CMAKE_CURRENT_SOURCE_DIR}/../core"
-            )
+	HINTS
+	"${CMAKE_SOURCE_DIR}/core"
+	)
 
 if(NVBIT_INCLUDE_DIR AND NVBIT_LIBRARIES)
 	add_library(NVBit INTERFACE IMPORTED)

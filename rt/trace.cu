@@ -402,7 +402,7 @@ void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *
 }
 
 
-void *my_malloc(std::size_t s, const char *desc)
+void *my_malloc(std::size_t s, int desc)
 {
 	void *p;
 #ifdef __CUDACC__
@@ -491,18 +491,18 @@ void trace(const char *name, int x, camera cam, Heuristic heu)
 
 	std::cout << "Got " << bvhb.num_nodes() << " nodes; bounds: " << bvhb.bounds.size() / 4 << " sum: " << bvhb.bounds.size() / 4 << std::endl;
 
-	uint8_t *framebuf = (uint8_t*)my_malloc(test.width() * test.height(), "FRAMEBUF");
-	uint32_t *d_subtrees = (uint32_t*)my_malloc(bvhb.subtrees.size() * 4, "BVH");
+	uint8_t *framebuf = (uint8_t*)my_malloc(test.width() * test.height(), 0);
+	uint32_t *d_subtrees = (uint32_t*)my_malloc(bvhb.subtrees.size() * 4, 1);
 // 	std::cout << "x" << std::endl;
 	my_upload(d_subtrees, (const char*)bvhb.subtrees.data(), bvhb.subtrees.size() * 4 /* TODO: here was a *3 */);
 // 	std::cout << "y" << std::endl;
 	std::vector<Face> trispermuted(bvhb.leaf_nodes.size());
-	float *d_bounds = (float*)my_malloc(bvhb.bounds.size() * 4 * 6, "AABBS");
+	float *d_bounds = (float*)my_malloc(bvhb.bounds.size() * 4 * 6, 2);
 	my_upload(d_bounds, (const char*)bvhb.bounds.data(), bvhb.bounds.size() * 4 * 6);
 
-	FaceG *d_tris = (FaceG*)my_malloc(trispermuted.size() * 4 * 3, "FACES");
-	Vtx *d_vtx = (Vtx*)my_malloc(mesh.vertices.size() * sizeof(Vtx), "VTX_POS");
-	VtxExtra *d_vtxextra = (VtxExtra*)my_malloc(mesh.vertices.size() * sizeof(VtxExtra), "VTX_ATTRIB");
+	FaceG *d_tris = (FaceG*)my_malloc(trispermuted.size() * 4 * 3, 3);
+	Vtx *d_vtx = (Vtx*)my_malloc(mesh.vertices.size() * sizeof(Vtx), 4);
+	VtxExtra *d_vtxextra = (VtxExtra*)my_malloc(mesh.vertices.size() * sizeof(VtxExtra), 5);
 
 
 	std::vector<Vtx> vtx(mesh.vertices.size());

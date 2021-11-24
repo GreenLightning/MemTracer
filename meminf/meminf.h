@@ -4,6 +4,6 @@
 
 extern "C" {
 
-void meminf_describe(void *ptr, const char *desc);
+void meminf_describe(void *ptr, int desc);
 
 }
