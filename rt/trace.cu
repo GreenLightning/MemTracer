@@ -1,57 +1,42 @@
 // Copyright (c) 2021, Max von Buelow, GRIS, Technical University of Darmstadt
 
+#include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <float.h>
-#include <stdint.h>
-#include <stdio.h>
 
-#include "happly.h"
 #include "image.h"
 #include "meminf.h"
 
 #include "bvh.h"
+#include "config.h"
 #include "types.h"
 
 #ifdef __CUDACC__
-#include <cuda_runtime.h>
+	#include <cuda_runtime.h>
 #endif
 
 #ifndef __CUDACC__
-template <typename T>
-T min(T a, T b)
-{
-	return a < b ? a : b;
-}
-template <typename T>
-T max(T a, T b)
-{
-	return a > b ? a : b;
-}
+	template <typename T> T min(T a, T b) {
+		return a < b ? a : b;
+	}
 
-struct float4 { float x, y, z, w; };
+	template <typename T> T max(T a, T b) {
+		return a > b ? a : b;
+	}
 
-#define __HD__
-#define __D__
-#else
-#define __HD__ __host__ __device__
-#define __D__ __device__
+	struct float4 { float x, y, z, w; };
+
+	#define __host__
+	#define __device__
 #endif
 
-struct RayG {
-	float org[3];
-	float dir[3];
-// 	inline void normalize()
-// 	{
-// 		float n = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
-// 		for (int i = 0; i < 3; ++i) dir[i] /= n;
-// 	}
-};
-__HD__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *rayorg, const float *raydir, const float *v0, const float *v1, const float *v2)
+__host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *rayorg, const float *raydir, const float *v0, const float *v1, const float *v2)
 {
 	// from wikipedia moeller trumbore
 	const float EPSILON = FLT_EPSILON;
@@ -86,36 +71,30 @@ __HD__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *ra
 	else return false; // This means that there is a line intersection but not a ray intersection.
 }
 
-struct camera {
-	float x, y, z;
-	float mat[9];
-	float fov;
-};
-
 struct FaceG {
 	uint32_t idx[3];
 };
 struct Vtx {
 	float v[3];
-	__HD__ Vtx()
+	__host__ __device__ Vtx()
 	{}
-	__HD__ Vtx(const Vtx &vtx) : v{ vtx.v[0], vtx.v[1], vtx.v[2] }
+	__host__ __device__ Vtx(const Vtx &vtx) : v{ vtx.v[0], vtx.v[1], vtx.v[2] }
 	{}
-	__HD__ Vtx(float a, float b, float c) : v{ a, b, c }
+	__host__ __device__ Vtx(float a, float b, float c) : v{ a, b, c }
 	{}
 };
 struct VtxExtra {
 	float v[3];
-	__HD__ VtxExtra()
+	__host__ __device__ VtxExtra()
 	{}
-	__HD__ VtxExtra(const VtxExtra &vtx) : v{ vtx.v[0], vtx.v[1], vtx.v[2] }
+	__host__ __device__ VtxExtra(const VtxExtra &vtx) : v{ vtx.v[0], vtx.v[1], vtx.v[2] }
 	{}
-	__HD__ VtxExtra(float a, float b, float c) : v{ a, b, c }
+	__host__ __device__ VtxExtra(float a, float b, float c) : v{ a, b, c }
 	{}
 };
 
 
-__D__ void g_mkray(float *rayorg, float *raydir, int x, int y, int w, int h, float ox, float oy, float oz, const float *M, float fov = 3)
+__device__ void g_mkray(float *rayorg, float *raydir, int x, int y, int w, int h, float ox, float oy, float oz, const float *M, float fov = 3)
 {
 	float a = w / h; // assuming width > height 
 	float Px = (2 * ((x + 0.5) / w) - 1) * tan(fov / 2 * M_PI / 180) * a;
@@ -144,14 +123,14 @@ __D__ void g_mkray(float *rayorg, float *raydir, int x, int y, int w, int h, flo
 
 
 template <typename T>
-__D__ void swap(T &a, T &b)
+__device__ void swap(T &a, T &b)
 {
 	T t;
 	t = a;
 	a = b;
 	b = t;
 }
-__D__ void intersect_bounding_planes_native(float &t1, float &t2, float min, float max, int axis, const float *rayorg, const float *raydir)
+__device__ void intersect_bounding_planes_native(float &t1, float &t2, float min, float max, int axis, const float *rayorg, const float *raydir)
 {
 	float dirfrac = 1.f / (axis == 0 ? raydir[0] : axis == 1 ? raydir[1] : raydir[2]);
 
@@ -165,9 +144,9 @@ __D__ void intersect_bounding_planes_native(float &t1, float &t2, float min, flo
 
 struct BoundsBVH {
 	const float *bounds;
-	__D__ BoundsBVH(const float *_bounds) : bounds(_bounds)
+	__device__ BoundsBVH(const float *_bounds) : bounds(_bounds)
 	{}
-	__D__ void intersect(float &t1l, float &t2l, float &t1r, float &t2r, uint32_t idx, const float *rayorg, const float *raydir) const
+	__device__ void intersect(float &t1l, float &t2l, float &t1r, float &t2r, uint32_t idx, const float *rayorg, const float *raydir) const
 	{
 		const float *b = bounds + idx * 12;
 		float q, w, e, r;
@@ -196,13 +175,13 @@ struct LeavesBVH {
 	const FaceG *tris;
 	const Vtx *vtx;
 	int nleafesmax;
-	__D__ LeavesBVH(const FaceG *_tris, const Vtx *_vtx, int nleafesmax) : tris(_tris), vtx(_vtx), nleafesmax(nleafesmax)
+	__device__ LeavesBVH(const FaceG *_tris, const Vtx *_vtx, int nleafesmax) : tris(_tris), vtx(_vtx), nleafesmax(nleafesmax)
 	{}
-	__D__ uint32_t get_off(uint32_t li) const
+	__device__ uint32_t get_off(uint32_t li) const
 	{
 		return li * nleafesmax;
 	}
-	__D__ bool intersect(float &t, HitPoint *hitpoint, uint32_t idx, uint32_t nchilds, const float *rayorg, const float *raydir) const
+	__device__ bool intersect(float &t, HitPoint *hitpoint, uint32_t idx, uint32_t nchilds, const float *rayorg, const float *raydir) const
 	{
 		FaceG f = tris[idx];
 		Vtx a = vtx[f.idx[0]];
@@ -225,13 +204,13 @@ struct LeavesBVH {
 struct StackEntry3 {
 	float t0, t1;
 	uint32_t idx, leaves;
-	__D__ StackEntry3()
+	__device__ StackEntry3()
 	{}
-	__D__ StackEntry3(float _t0, float _t1, uint32_t _idx, uint32_t _leaves) : t0(_t0), t1(_t1), idx(_idx), leaves(_leaves)
+	__device__ StackEntry3(float _t0, float _t1, uint32_t _idx, uint32_t _leaves) : t0(_t0), t1(_t1), idx(_idx), leaves(_leaves)
 	{}
 };
 template <typename Subtrees, typename Bounds, typename Leaves, int L>
-__D__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subtrees /* subtree sizes */, const Bounds &bounds, const Leaves &leaves, const float *rayorg, const float *raydir)
+__device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subtrees /* subtree sizes */, const Bounds &bounds, const Leaves &leaves, const float *rayorg, const float *raydir)
 {
 	bool hit = false;
 	float t0 = 0, t1 = FLT_MAX;
@@ -317,7 +296,7 @@ __D__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subtrees 
 }
 
 
-__D__ void fragment_shader(const float *vin, const float *light, float *colout, bool hit_shadow)
+__device__ void fragment_shader(const float *vin, const float *light, float *colout, bool hit_shadow)
 {
 	float x = vin[0], y = vin[1], z = vin[2];
 	float nx = vin[3], ny = vin[4], nz = vin[5];
@@ -334,7 +313,7 @@ __D__ void fragment_shader(const float *vin, const float *light, float *colout, 
 #ifdef __CUDACC__
 __global__
 #endif
-void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, camera cam, int nleafesmax)
+void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
 {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x; y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
@@ -384,7 +363,7 @@ void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, cons
 }
 
 
-void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, camera cam, int nleafesmax)
+void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax)
 {
 	std::cout << "Max lvl: " << maxlvl << " " << maxlvl * sizeof(StackEntry3) << std::endl;
 
@@ -405,92 +384,46 @@ void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *
 #endif
 }
 
-
-void *my_malloc(std::size_t s, int desc)
-{
-	void *p;
-#ifdef __CUDACC__
-	cudaMalloc(&p, s);
-#else
-	p = malloc(s);
-#endif
-	meminf_describe(p, desc);
-	return p;
-}
-void my_upload(void *dst, const void *src, std::size_t s)
-{
-#ifdef __CUDACC__
-	cudaMemcpy(dst, src, s, cudaMemcpyHostToDevice);
-#else
-	std::memcpy(dst, src, s);
-#endif
-}
-void my_download(void *dst, const void *src, std::size_t s)
-{
-#ifdef __CUDACC__
-	cudaMemcpy(dst, src, s, cudaMemcpyDeviceToHost);
-#else
-	std::memcpy(dst, src, s);
-#endif
+void *my_malloc(std::size_t size, int description) {
+	void* result = nullptr;
+	#ifdef __CUDACC__
+		cudaMalloc(&result, size);
+	#else
+		result = malloc(size);
+	#endif
+	meminf_describe(result, description);
+	return result;
 }
 
-
-int myatoi(const std::string &s)
-{
-	int v = 1;
-	int l = s.size();
-	switch (s.back()) {
-	case 'm':
-	case 'M':
-		v *= 1024;
-	case 'k':
-		v *= 1024;
-		--l;
-	}
-	return v * std::stoi(s.substr(0, l));
+void my_upload(void *dst, const void *src, std::size_t size) {
+	#ifdef __CUDACC__
+		cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice);
+	#else
+		std::memcpy(dst, src, size);
+	#endif
 }
 
-Mesh loadMesh(const char* name) {
-	Mesh mesh;
-
-	happly::PLYData data(name);
-
-	auto& vertex = data.getElement("vertex");
-	std::vector<float> x = vertex.getProperty<float>("x");
-	std::vector<float> y = vertex.getProperty<float>("y");
-	std::vector<float> z = vertex.getProperty<float>("z");
-
-	mesh.vertices.reserve(x.size());
-	for (int i = 0; i < x.size(); i++) {
-		mesh.vertices.emplace_back(x[i], y[i], z[i]);
-	}
-
-	std::vector<std::vector<size_t>> indicesList = data.getFaceIndices<size_t>();
-	for (auto& indices : indicesList) {
-		// Perform basic triangulation for faces with more than 3 vertices.
-		for (int i = 1; i + 1 < indices.size(); i++) {
-			mesh.faces.emplace_back(indices[0], indices[i], indices[i+1]);
-		}
-	}
-
-	return mesh;
+void my_download(void *dst, const void *src, std::size_t size) {
+	#ifdef __CUDACC__
+		cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost);
+	#else
+		std::memcpy(dst, src, size);
+	#endif
 }
 
-void trace(const char* name, int x, camera cam, Heuristic heu) {
-	image_b test(x, x, 1);
-	Mesh mesh = loadMesh(name);
+void trace(Configuration& config) {
+	image_b test(config.width, config.height, 1);
+	Mesh mesh = loadMesh(config.input);
 	mesh.compute_normals();
 
-
 	std::cout << "Mesh statistics: Faces: " << mesh.faces.size() << " Vertices: " << mesh.vertices.size() << std::endl;
-	static const int SIZEOF_EXPPATCH = 512;
 
 	BVHBuilder bvhb;
 
 	int nleafesmax = 32;
 
 	int tag = 0;
-	if (1||!bvhb.restore(name, tag)) {
+	if (1||!bvhb.restore(config.input.c_str(), tag)) {
 		std::vector<float> aabbs(mesh.faces.size() * 6);
 		std::vector<float> cens(mesh.faces.size() * 3);
 		for (uint32_t i = 0; i < mesh.faces.size(); ++i) {
@@ -511,9 +444,9 @@ void trace(const char* name, int x, camera cam, Heuristic heu) {
 			}
 		}
 
-		bvhb.construct(cens.data(), aabbs.data(), mesh.faces.size(), nleafesmax, heu);
+		bvhb.construct(cens.data(), aabbs.data(), mesh.faces.size(), nleafesmax, config.heuristic);
 
-		bvhb.backup(name, tag);
+		bvhb.backup(config.input.c_str(), tag);
 	} else {
 		std::cout << "Found a BVH backup!" << std::endl;
 	}
@@ -555,27 +488,120 @@ void trace(const char* name, int x, camera cam, Heuristic heu) {
 
 	std::cout << "Starting renderer" << std::endl;
 
-	trace_gpu_sah(framebuf, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, test.width(), test.height(), bvhb.maxlvl, cam, nleafesmax);
+	trace_gpu_sah(framebuf, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, test.width(), test.height(), bvhb.maxlvl, config.camera, nleafesmax);
 
 	std::cout << "Download" << std::endl;
 	my_download((char*)test.data(), framebuf, test.width() * test.height());
 
 	std::cout << "Original mesh size: " << mesh.faces.size() << std::endl;
 	std::cout << "Leaf triangles: " << bvhb.leaf_nodes.size() << std::endl;
-	image_io::save(test, "test.png");
+	image_io::save(test, config.output.c_str());
 }
 
-int main(int argc, const char **argv)
-{
-	camera cam{ std::atof(argv[3]), std::atof(argv[4]), std::atof(argv[5]), {
-		std::atof(argv[6]), std::atof(argv[7]), std::atof(argv[8]),
-		std::atof(argv[9]), std::atof(argv[10]), std::atof(argv[11]),
-		std::atof(argv[12]), std::atof(argv[13]), std::atof(argv[14])
-	}, std::atof(argv[15]) };
+int main(int argc, const char** argv) {
+	Configuration config;
 
-	int x = myatoi(argv[2]);
-	const char *name = argv[1];
-	trace(name, x, cam, argv[16] == std::string("sah") ? SAH : MEDIAN);
+	for (int i = 1; i < argc; i++) {
+		std::string argument = argv[i];
+
+		if (argument == "-config") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			try {
+				loadConfiguration(config, argv[++i]);
+			} catch (const std::exception& e) {
+				std::cerr << e.what() << std::endl;
+				return 1;
+			}
+			continue;
+		}
+
+		if (argument == "-input") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			config.input = argv[++i];
+			continue;
+		}
+
+		if (argument == "-output") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			config.output = argv[++i];
+			continue;
+		}
+
+		if (argument == "-width") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			int value = std::atoi(argv[++i]);
+			if (value == 0) {
+				std::cerr << "bad value for " << argument << std::endl;
+				return 1;
+			}
+			config.width = value;
+			continue;
+		}
+
+		if (argument == "-height") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			int value = std::atoi(argv[++i]);
+			if (value == 0) {
+				std::cerr << "bad value for " << argument << std::endl;
+				return 1;
+			}
+			config.height = value;
+			continue;
+		}
+
+		if (argument == "-heuristic") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			std::string value = argv[++i];
+			if (value == "sah") {
+				config.heuristic = SAH;
+			} else if (value == "median") {
+				config.heuristic = MEDIAN;
+			} else {
+				std::cerr << "warning: ignoring unknown value for " << argument << ": " << value << std::endl;
+			}
+			continue;
+		}
+
+		std::cerr << "unknown argument " << argument << std::endl;
+		return 1;
+	}
+
+	if (config.input.empty()) {
+		std::cerr << "no input file specified, use -input or -config" << std::endl;
+		return 1;
+	}
+	if (config.output.empty()) {
+		std::cerr << "no output file specified, use -output or -config" << std::endl;
+		return 1;
+	}
+	if (config.width == 0 || config.height == 0) {
+		std::cerr << "no output size specified, use -width and -height or -config" << std::endl;
+		return 1;
+	}
+
+	try {
+		trace(config);
+		return 0;
+	} catch (const std::runtime_error& e) {
+		std::cerr << e.what() << std::endl;
+		return 1;
+	}
 }
-
-

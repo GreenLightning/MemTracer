@@ -6,6 +6,12 @@
 #include <unordered_map>
 #include <vector>
 
+struct Camera {
+	float x = 0, y = 0, z = 0;
+	float mat[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+	float fov = 60;
+};
+
 struct AABB {
 	float min[3], max[3];
 
@@ -199,3 +205,4 @@ struct Mesh {
 	}
 };
 
+Mesh loadMesh(const std::string& name);

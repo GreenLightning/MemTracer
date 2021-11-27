@@ -12,6 +12,7 @@
 enum Heuristic { SAH, MEDIAN };
 
 enum SplitDescent { NODE_LEFT, NODE_RIGHT };
+
 struct BVHBuilder
 {
 	uint32_t maxlvl;

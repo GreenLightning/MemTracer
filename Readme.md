@@ -20,7 +20,26 @@ Fedora: `sudo dnf install libpng-devel libjpeg-devel openexr-devel`
 
 ## Running
 
+Example configuration file `config.toml`:
+
+```
+input = 'bun_zipper.ply'
+# output = 'output.png'
+heuristic = 'sah'
+size = [256, 256]
+
+[camera]
+position = [-0.0160, 0.1079, 0.2]
+vertical_fov = 60
+```
+
+Command line options are:
+
+```
+./rt -config config.toml -width 128 -height 128 -input input.ply -output output.png -heuristic sah
+```
+
 ```
 LD_PRELOAD=./mem_trace/libmem_trace.so 
-./rt/rt ../workspace/data/bun_zipper.ply 256 -0.0081 0.1079 5.5 1 0 0 0 1 0 0 0 1 3 sah
+./rt/rt -config ../workspace/data/config.toml -output test.png
 ```
