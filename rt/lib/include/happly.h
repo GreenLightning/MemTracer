@@ -238,6 +238,11 @@ T swapEndian(T val) {
   return val;
 }
 
+template <>
+uint8_t swapEndian<uint8_t>(uint8_t val) { return val; }
+
+template <>
+int8_t swapEndian<int8_t>(int8_t val) { return val; }
 
 // Unpack flattened list from the convention used in TypedListProperty
 template <typename T>
