@@ -1,93 +1,107 @@
 #pragma once
 
-#include <vector>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <unordered_map>
+#include <vector>
 
-namespace types {
+struct AABB {
+	float min[3], max[3];
 
-static const int SIZES[11] = { 4, 8, 8, 8, 4, 4, 2, 2, 1, 1, 0 };
-enum Type { FLOAT, DOUBLE, ULONG, LONG, UINT, INT, USHORT, SHORT, UCHAR, CHAR, NONE };
-enum Interp {
-	PX, PY, PZ, PW,
-	NX, NY, NZ, NW,
-	CR, CG, CB, CA,
-	CAR, CAG, CAB, CAA, CAC,
-	CDR, CDG, CDB, CDA, CDC,
-	CSR, CSG, CSB, CSA, CSP, CSC,
-	TU, TV, TW,
-	SCALE, CONFIDENCE,
-
-	OTHER, };
-
-
-}
-
-struct VtxBuf {
-	std::vector<types::Type> types;
-	std::vector<uint32_t> offsets;
-	std::vector<uint8_t> buf;
-	uint32_t idx_interp[types::OTHER];
-
-	int curoff;
-	int i;
-
-	VtxBuf() : offsets(1, 0), i(0)
+// 	AABB(const AABB &other)
+// 	{
+// 		for (int i = 0; i < 3; ++i) {
+// 			min[i] = other.min[i];
+// 			max[i] = other.max[i];
+// 		}
+// 	}
+	AABB() : min{ std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity() }, max{ -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() }
+	{}
+	AABB(float *mi, float *ma)
 	{
-		for (int i = 0; i < types::OTHER; ++i) idx_interp[i] = -1u;
+		for (int i = 0; i < 3; ++i) {
+			min[i] = mi[i];
+			max[i] = ma[i];
+		}
 	}
 
-	void describe(types::Type t, types::Interp i)
+	void feed(const float *pos)
 	{
-		idx_interp[i] = types.size();
-		describe(t);
+		feed_min(pos);
+		feed_max(pos);
 	}
-	void describe(types::Type t)
+	void feed_min(const float *pos)
 	{
-		types.push_back(t);
-		offsets.push_back(offsets.back() + types::SIZES[t]);
-		buf.resize(offsets.back());
+		for (int i = 0; i < 3; ++i) {
+			min[i] = std::min(min[i], pos[i]);
+		}
 	}
-
-	uint8_t *getdst()
+	void feed_max(const float *pos)
 	{
-		return buf.data() + offsets[i++];
-	}
-
-	void reset()
-	{
-		i = 0;
-	}
-
-	bool has(types::Interp i) const
-	{
-		return idx_interp[i] != -1u;
-	}
-
-	template <typename T>
-	static T extract(const uint8_t *buf)
-	{
-		return *(T*)buf;
-	}
-
-	template <typename T>
-	T get(types::Interp i) const
-	{
-		int idx = idx_interp[i];
-		const uint8_t *b = buf.data() + offsets[idx];
-		switch (types[idx]) {
-		case types::NONE:   return T();
-		case types::CHAR:   return (T)extract<int8_t>  (b);
-		case types::UCHAR:  return (T)extract<uint8_t> (b);
-		case types::SHORT:  return (T)extract<int16_t> (b);
-		case types::USHORT: return (T)extract<uint16_t>(b);
-		case types::INT:    return (T)extract<int32_t> (b);
-		case types::UINT:   return (T)extract<uint32_t>(b);
-		case types::FLOAT:  return (T)extract<float>   (b);
-		case types::DOUBLE: return (T)extract<double>  (b);
+		for (int i = 0; i < 3; ++i) {
+			max[i] = std::max(max[i], pos[i]);
 		}
 	}
 };
 
+struct Ray {
+	float org[3];
+	float dir[3];
+	inline void normalize()
+	{
+		float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+		for (int i = 0; i < 3; ++i) dir[i] /= n;
+	}
+};
+
+inline bool tri_intersect(float &t, float &uu, float &vv, const Ray &ray, const float *v0, const float *v1, const float *v2)
+{
+	// from wikipedia moeller trumbore
+	const double EPSILON = std::numeric_limits<double>::epsilon();
+
+	double e1x = v1[0] - v0[0], e1y = v1[1] - v0[1], e1z = v1[2] - v0[2];
+	double e2x = v2[0] - v0[0], e2y = v2[1] - v0[1], e2z = v2[2] - v0[2];
+
+	double hx = ray.dir[1] * e2z - ray.dir[2] * e2y;
+	double hy = ray.dir[2] * e2x - ray.dir[0] * e2z;
+	double hz = ray.dir[0] * e2y - ray.dir[1] * e2x;
+
+	double a = e1x * hx + e1y * hy + e1z * hz;
+	if (a > -EPSILON && a < EPSILON) return false; // This ray is parallel to this triangle.
+
+	double f = 1.0 / a;
+	double sx = ray.org[0] - v0[0], sy = ray.org[1] - v0[1], sz = ray.org[2] - v0[2];
+	double u = f * (sx * hx + sy * hy + sz * hz);
+	if (u < 0.0 || u > 1.0) return false;
+
+	double qx = sy * e1z - sz * e1y;
+	double qy = sz * e1x - sx * e1z;
+	double qz = sx * e1y - sy * e1x;
+
+	double v = f * (ray.dir[0] * qx + ray.dir[1] * qy + ray.dir[2] * qz);
+	if (v < 0.0 || u + v > 1.0) return false;
+	uu = u;
+	vv = v;
+
+	// At this stage we can compute t to find out where the intersection point is on the line.
+	t = f * (e2x * qx + e2y * qy + e2z * qz);
+	if (t > EPSILON) return true; // ray intersection
+	else return false; // This means that there is a line intersection but not a ray intersection.
+}
+
+struct Vertex {
+	float pos[6];
+// 	float nrm[3];
+
+	Vertex() {}
+	Vertex(float x, float y, float z) : pos{ x, y, z }
+	{}
+	Vertex(const Vertex &vtx) : pos{ vtx.pos[0], vtx.pos[1], vtx.pos[2], vtx.pos[3], vtx.pos[4], vtx.pos[5] }
+	{}
+	Vertex(const volatile Vertex &vtx) : pos{ vtx.pos[0], vtx.pos[1], vtx.pos[2], vtx.pos[3], vtx.pos[4], vtx.pos[5] }
+	{}
+};
 
 struct Face {
 	uint32_t idx[3];
@@ -105,38 +119,83 @@ struct Face {
 // 		return Face{ idx[0] + off, idx[1] + off, idx[2] + off };
 // 	}
 };
-struct Face16 {
-	uint16_t idx[3];
-};
 
 struct Mesh {
-	typedef std::vector<Face> Faces;
-	Faces faces;
-	enum VtxDataType { VTX, NRM, TEX };
-	std::unordered_map<uint32_t, std::vector<uint32_t>> fan_faces;
-	void add_face(uint32_t a, uint32_t b, uint32_t c)
+	std::vector<Vertex> vertices;
+	std::vector<Face> faces;
+	std::vector<AABB> aabbs;
+
+	void precompute_aabbs()
 	{
-		uint32_t x[] = { a, b, c };
-		for (int z = 0; z < 3; ++z) {
-			const std::vector<uint32_t> &cur_faces = fan_faces[x[z]];
-			for (int i = 0; i < cur_faces.size(); ++i) {
-				for (int j = 0; j < 3; ++j) {
-					if (a == faces[cur_faces[i]].idx[j % 3] && b == faces[cur_faces[i]].idx[(j + 1) % 3] && c == faces[cur_faces[i]].idx[(j + 2) % 3]) {
-						return;
-					}
-				}
+		aabbs.resize(faces.size());
+		for (int i = 0; i < aabbs.size(); ++i) {
+			for (int v = 0; v < 3; ++v) {
+				aabbs[i].feed(vertices[faces[i].idx[v]].pos);
 			}
 		}
-		fan_faces[a].push_back(faces.size());
-		fan_faces[b].push_back(faces.size());
-		fan_faces[c].push_back(faces.size());
-		faces.push_back(Face{ a, b, c });
 	}
-	void clear_tmp()
+	void compute_normals()
 	{
-		fan_faces = std::unordered_map<uint32_t, std::vector<uint32_t>>();
+		for (int i = 0; i < faces.size(); ++i) {
+			float ux = get_coord(i, 1)[0] - get_coord(i, 0)[0], uy = get_coord(i, 1)[1] - get_coord(i, 0)[1], uz = get_coord(i, 1)[2] - get_coord(i, 0)[2];
+			float vx = get_coord(i, 2)[0] - get_coord(i, 0)[0], vy = get_coord(i, 2)[1] - get_coord(i, 0)[1], vz = get_coord(i, 2)[2] - get_coord(i, 0)[2];
+
+			float nx = -uy * vz + uz * vy;
+			float ny = -uz * vx + ux * vz;
+			float nz = -ux * vy + uy * vx;
+			float nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+			if (nl != 0.f) { nx /= nl; ny /= nl; nz /= nl; }
+
+			for (int j = 0; j < 3; ++j) {
+				vertices[faces[i].idx[j]].pos[3] = nx;
+				vertices[faces[i].idx[j]].pos[4] = ny;
+				vertices[faces[i].idx[j]].pos[5] = nz;
+			}
+		}
 	}
-	virtual void add_vtx(const VtxBuf &buf, VtxDataType t = VTX) = 0;
-	virtual void validate(const VtxBuf &buf) const = 0;
-	virtual std::size_t size_vertices() const = 0;
+
+	AABB compute_aabb() const
+	{
+		AABB aabb;
+		for (int i = 0; i < vertices.size(); ++i) {
+			aabb.feed(vertices[i].pos);
+		}
+		return aabb;
+	}
+
+	std::size_t size_vertices() const
+	{
+		return vertices.size();
+	}
+	std::size_t size() const
+	{
+		return faces.size();
+	}
+	float get_bounding_min(int axis, uint32_t idx) const
+	{
+		return aabbs[idx].min[axis];
+	}
+	float get_bounding_max(int axis, uint32_t idx) const
+	{
+		return aabbs[idx].max[axis];
+	}
+
+	const float *get_coord(int face, int edge) const
+	{
+		return vertices[faces[face].idx[edge]].pos;
+	}
+
+	bool intersect(float &t, void *data, uint32_t idx, const Ray &ray) const
+	{
+		float u, v;
+		if (!tri_intersect(t, u, v, ray, get_coord(idx, 0), get_coord(idx, 1), get_coord(idx, 2))) return false;
+
+		float *d = (float*)data;
+		for (int i = 0; i < 6; ++i) { // NOTE: n comes after v in memory
+			d[i] = vertices[faces[idx].idx[0]].pos[i] * (1.f - u - v) + vertices[faces[idx].idx[1]].pos[i] * u + vertices[faces[idx].idx[2]].pos[i] * v;
+		}
+
+		return true;
+	}
 };
+

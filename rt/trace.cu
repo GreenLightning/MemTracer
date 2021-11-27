@@ -12,10 +12,10 @@
 
 #include "happly.h"
 #include "image.h"
+#include "meminf.h"
 
 #include "bvh.h"
-#include "meminf.h"
-#include "mymesh.h"
+#include "types.h"
 
 #ifdef __CUDACC__
 #include <cuda_runtime.h>
@@ -450,8 +450,8 @@ int myatoi(const std::string &s)
 	return v * std::stoi(s.substr(0, l));
 }
 
-MyMesh loadMesh(const char* name) {
-	MyMesh mesh;
+Mesh loadMesh(const char* name) {
+	Mesh mesh;
 
 	happly::PLYData data(name);
 
@@ -478,7 +478,7 @@ MyMesh loadMesh(const char* name) {
 
 void trace(const char* name, int x, camera cam, Heuristic heu) {
 	image_b test(x, x, 1);
-	MyMesh mesh = loadMesh(name);
+	Mesh mesh = loadMesh(name);
 	mesh.compute_normals();
 
 

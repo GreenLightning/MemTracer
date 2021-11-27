@@ -2,14 +2,14 @@
 
 #include "bvh.h"
 
-#include <random>
-#include <numeric>
-#include <vector>
 #include <algorithm>
+#include <iostream>
+#include <numeric>
 #include <queue>
+#include <random>
 #include <stack>
 #include <unordered_set>
-#include <iostream>
+#include <vector>
 #include "vec.h"
 
 #define NBINS 256

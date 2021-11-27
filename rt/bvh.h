@@ -1,11 +1,13 @@
 #pragma once
+
 #include <cstdint>
 #include <iostream>
 #include <fstream>
-#include "aabb.h"
 #include <string>
 #include <unordered_set>
 #include <queue>
+
+#include "types.h"
 
 enum Heuristic { SAH, MEDIAN };
 
