@@ -2,9 +2,6 @@
 
 #include "bvh.h"
 
-static void sigtrap() { __asm__("int3"); }
-#define __BP sigtrap()
-
 #include <random>
 #include <numeric>
 #include <vector>

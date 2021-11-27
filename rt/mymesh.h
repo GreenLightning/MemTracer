@@ -4,6 +4,7 @@
 
 #include "ray.h"
 #include "aabb.h"
+#include "types.h"
 #include "tri_intersect.h"
 
 struct Vertex {

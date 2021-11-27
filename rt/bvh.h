@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include "aabb.h"
+#include <string>
 #include <unordered_set>
 #include <queue>
 
