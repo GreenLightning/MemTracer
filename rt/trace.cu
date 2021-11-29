@@ -11,11 +11,14 @@
 #include <limits>
 
 #include "image.h"
-#include "meminf.h"
 
 #include "bvh.h"
 #include "config.h"
 #include "types.h"
+
+#ifdef MEMINF_ENABLED
+	#include "meminf.h"
+#endif
 
 #ifdef __CUDACC__
 	#include <cuda_runtime.h>
@@ -385,7 +388,9 @@ void *my_malloc(std::size_t size, int description) {
 	#else
 		result = malloc(size);
 	#endif
-	meminf_describe(result, description);
+	#ifdef MEMINF_ENABLED
+		meminf_describe(result, description);
+	#endif
 	return result;
 }
 
