@@ -34,6 +34,7 @@
 
 	#define __host__
 	#define __device__
+	#define __global__
 #endif
 
 __host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *rayorg, const float *raydir, const float *v0, const float *v1, const float *v2)
@@ -309,21 +310,18 @@ __device__ void fragment_shader(const float *vin, const float *light, float *col
 	colout[0] = min(max(1.f * dot, 0.f), 1.f) - (hit_shadow ? 0.5 : 0);
 }
 
-
-#ifdef __CUDACC__
-__global__
-#endif
-void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
+__global__ void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
 {
 #ifdef __CUDACC__
-	x = blockDim.x * (0+blockIdx.x) + threadIdx.x; y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
+	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
+	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
 	if (x >= w || y >= h) return;
 #endif
 
 	static const float light[] = { 50, 220, 1140 };
 
 	float rayorg[3], raydir[3];
-	g_mkray(rayorg, raydir, x, y, w, h, cam.x, cam.y, cam.z, cam.mat, cam.fov/*, 0, 200, 10000*//*, 0, 0, 4000*/);
+	g_mkray(rayorg, raydir, x, y, w, h, cam.x, cam.y, cam.z, cam.mat, cam.fov);
 
 	float t = FLT_MAX;
 	HitPoint hitpoint;
@@ -362,18 +360,14 @@ void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, cons
 	framebuf[y * w + x] = res * 255;
 }
 
-
 void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax)
 {
 	std::cout << "Max lvl: " << maxlvl << " " << maxlvl * sizeof(StackEntry3) << std::endl;
-
 	std::cout << "Sizes: " << sizeof(FaceG) << " " << sizeof(Vtx) << " " << sizeof(VtxExtra) << std::endl;
 
 #ifdef __CUDACC__
 	dim3 blockd(8, 8);
 	dim3 gridd((w + blockd.x - 1) / blockd.x, (h + blockd.y - 1) / blockd.y);
-	std::cout << "Max lvl: " << maxlvl << " " << maxlvl * sizeof(StackEntry3) << std::endl;
-
 	TraceKernel<<<gridd, blockd>>>(0, 0, framebuf, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
 #else
 	for (int y = 0; y < h; ++y) {
@@ -412,16 +406,12 @@ void my_download(void *dst, const void *src, std::size_t size) {
 }
 
 void trace(Configuration& config) {
-	image_b test(config.width, config.height, 1);
 	Mesh mesh = loadMesh(config.input);
 	mesh.compute_normals();
-
 	std::cout << "Mesh statistics: Faces: " << mesh.faces.size() << " Vertices: " << mesh.vertices.size() << std::endl;
 
 	BVHBuilder bvhb;
-
 	int nleafesmax = 32;
-
 	int tag = 0;
 	if (1||!bvhb.restore(config.input.c_str(), tag)) {
 		std::vector<float> aabbs(mesh.faces.size() * 6);
@@ -453,7 +443,8 @@ void trace(Configuration& config) {
 
 	std::cout << "Got " << bvhb.num_nodes() << " nodes; bounds: " << bvhb.bounds.size() / 4 << " sum: " << bvhb.bounds.size() / 4 << std::endl;
 
-	uint8_t *framebuf = (uint8_t*)my_malloc(test.width() * test.height(), 0);
+	image_b output(config.width, config.height, 1);
+	uint8_t *framebuf = (uint8_t*)my_malloc(output.width() * output.height(), 0);
 	uint32_t *d_subtrees = (uint32_t*)my_malloc(bvhb.subtrees.size() * 4, 1);
 // 	std::cout << "x" << std::endl;
 	my_upload(d_subtrees, (const char*)bvhb.subtrees.data(), bvhb.subtrees.size() * 4 /* TODO: here was a *3 */);
@@ -488,14 +479,14 @@ void trace(Configuration& config) {
 
 	std::cout << "Starting renderer" << std::endl;
 
-	trace_gpu_sah(framebuf, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, test.width(), test.height(), bvhb.maxlvl, config.camera, nleafesmax);
+	trace_gpu_sah(framebuf, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, output.width(), output.height(), bvhb.maxlvl, config.camera, nleafesmax);
 
 	std::cout << "Download" << std::endl;
-	my_download((char*)test.data(), framebuf, test.width() * test.height());
+	my_download((char*)output.data(), framebuf, output.width() * output.height());
 
 	std::cout << "Original mesh size: " << mesh.faces.size() << std::endl;
 	std::cout << "Leaf triangles: " << bvhb.leaf_nodes.size() << std::endl;
-	image_io::save(test, config.output.c_str());
+	image_io::save(output, config.output.c_str());
 }
 
 int main(int argc, const char** argv) {
