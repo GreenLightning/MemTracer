@@ -40,6 +40,36 @@
 	#define __global__
 #endif
 
+#ifdef __CUDACC__
+
+	// Here are some macros to check cuda error codes in debug builds.
+	// Just wrap a function that returns a cuda error with CUDA_CHECK():
+	//
+	//     CUDA_CHECK(cudaMalloc(...));
+	//
+	// You can also use CUDA_CHECK_LAST_ERROR() to check the last error
+	// as returned by cudaGetLastError(). The reason this is a separate macro
+	// is that CUDA_CHECK(cudaGetLastError()) would still call cudaGetLastError()
+	// in release mode, which resets the last error, but the returned code
+	// is not checked in that mode. Therefore CUDA_CHECK_LAST_ERROR()
+	// is preferred.
+
+	#define CUDA_CHECK(code) { cudaError_t _cudaCheckError = (code); cudaCheck(_cudaCheckError , __FILE__, __LINE__); }
+	#define CUDA_CHECK_LAST_ERROR() CUDA_CHECK(cudaGetLastError())
+
+	inline void cudaCheck(cudaError_t err, const char* file, int line) {
+		if (err != cudaSuccess) {
+			std::cerr << file << ":" << line << ": " << cudaGetErrorString(err) << " (" << err << ")" << std::endl;
+		}
+	}
+
+#else
+
+	#define CUDA_CHECK(code) (code)
+	#define CUDA_CHECK_LAST_ERROR()
+
+#endif
+
 __host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *rayorg, const float *raydir, const float *v0, const float *v1, const float *v2)
 {
 	// from wikipedia moeller trumbore
@@ -372,6 +402,7 @@ void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *
 	dim3 blockd(8, 8);
 	dim3 gridd((w + blockd.x - 1) / blockd.x, (h + blockd.y - 1) / blockd.y);
 	TraceKernel<<<gridd, blockd>>>(0, 0, framebuf, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
+	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; ++y) {
 		for (int x = 0; x < w; ++x) {
@@ -384,7 +415,7 @@ void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *
 void *my_malloc(std::size_t size, int description) {
 	void* result = nullptr;
 	#ifdef __CUDACC__
-		cudaMalloc(&result, size);
+		CUDA_CHECK(cudaMalloc(&result, size));
 	#else
 		result = malloc(size);
 	#endif
@@ -396,7 +427,7 @@ void *my_malloc(std::size_t size, int description) {
 
 void my_upload(void *dst, const void *src, std::size_t size) {
 	#ifdef __CUDACC__
-		cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice);
+		CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice));
 	#else
 		std::memcpy(dst, src, size);
 	#endif
@@ -404,7 +435,7 @@ void my_upload(void *dst, const void *src, std::size_t size) {
 
 void my_download(void *dst, const void *src, std::size_t size) {
 	#ifdef __CUDACC__
-		cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost);
+		CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost));
 	#else
 		std::memcpy(dst, src, size);
 	#endif
