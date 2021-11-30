@@ -34,34 +34,26 @@
 #include <string>
 #include <unordered_set>
 
-/* every tool needs to include this once */
+// Every tool needs to include this once.
 #include "nvbit_tool.h"
 
-/* nvbit interface file */
 #include "nvbit.h"
-
 #include "utils/channel.hpp"
-#include "common.h"
 #include "meminf_data.h"
-
-#define HEX(x) "0x" << std::setfill('0') << std::setw(16) << std::hex << (uint64_t)x << std::dec
+#include "common.h"
 
 #define CHANNEL_SIZE (1l << 20)
 
 struct CTXstate {
-	/* context id */
 	int id;
-
-	/* Channel used to communicate from GPU to CPU receiving thread */
 	ChannelDev* channel_dev;
 	ChannelHost channel_host;
 };
 
-/* lock */
 pthread_mutex_t mutex;
 
-/* map to store context state */
 std::unordered_map<CUcontext, CTXstate*> ctx_state_map;
+std::map<uint64_t, std::string> addr_to_opcode_map;
 
 /* skip flag used to avoid re-entry on the nvbit_callback when issuing
  * flush_channel kernel call */
@@ -71,10 +63,6 @@ bool skip_callback_flag = false;
 uint32_t instr_begin_interval = 0;
 uint32_t instr_end_interval = UINT32_MAX;
 int verbose = 0;
-
-/* opcode to id map and reverse map  */
-std::map<std::string, int> opcode_to_id_map;
-std::map<int, std::string> id_to_opcode_map;
 
 /* grid launch id, incremented at every launch */
 uint64_t grid_launch_id = 0;
@@ -105,34 +93,23 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 	assert(ctx_state_map.find(ctx) != ctx_state_map.end());
 	CTXstate* ctx_state = ctx_state_map[ctx];
 
-	/* Get related functions of the kernel (device function that can be
-	 * called by the kernel) */
-	std::vector<CUfunction> related_functions =
-		nvbit_get_related_functions(ctx, func);
+	// Related functions are the functions that can be called by the kernel.
+	std::vector<CUfunction> functions_to_instrument = nvbit_get_related_functions(ctx, func);
+	functions_to_instrument.push_back(func);
 
-	/* add kernel itself to the related function vector */
-	related_functions.push_back(func);
+	for (auto f : functions_to_instrument) {
+		bool inserted_successfully = already_instrumented.insert(f).second;
+		if (!inserted_successfully) continue;
 
-	/* iterate on function */
-	for (auto f : related_functions) {
-		/* "recording" function was instrumented, if set insertion failed
-		 * we have already encountered this function */
-		if (!already_instrumented.insert(f).second) {
-			continue;
-		}
-
-		/* get vector of instructions of function "f" */
 		const std::vector<Instr*>& instrs = nvbit_get_instrs(ctx, f);
+		uint64_t func_addr = nvbit_get_func_addr(f);
 
 		if (verbose) {
-			printf(
-				"MEMTRACE: CTX %p, Inspecting CUfunction %p name %s at address "
-				"0x%lx\n",
+			printf("MEMTRACE: CTX %p, Inspecting CUfunction %p name %s at address 0x%lx\n",
 				ctx, f, nvbit_get_func_name(ctx, f), nvbit_get_func_addr(f));
 		}
 
 		uint32_t cnt = 0;
-		/* iterate on all the static instructions in the function */
 		for (auto instr : instrs) {
 			if (cnt < instr_begin_interval || cnt >= instr_end_interval ||
 				instr->getMemorySpace() == InstrType::MemorySpace::NONE ||
@@ -144,35 +121,24 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 				instr->printDecoded();
 			}
 
-			if (opcode_to_id_map.find(instr->getOpcode()) ==
-				opcode_to_id_map.end()) {
-				int opcode_id = opcode_to_id_map.size();
-				opcode_to_id_map[instr->getOpcode()] = opcode_id;
-				id_to_opcode_map[opcode_id] = std::string(instr->getOpcode());
-			}
+			uint32_t offset = instr->getOffset();
+			uint64_t instr_addr = func_addr + static_cast<uint64_t>(offset);
+			addr_to_opcode_map[instr_addr] = std::string(instr->getOpcode());
 
-			int opcode_id = opcode_to_id_map[instr->getOpcode()];
 			int mref_idx = 0;
 			for (int i = 0; i < instr->getNumOperands(); i++) {
 				const InstrType::operand_t* op = instr->getOperand(i);
 
 				if (op->type == InstrType::OperandType::MREF) {
-					/* insert call to the instrumentation function with its
-					 * arguments */
 					nvbit_insert_call(instr, "instrument_mem", IPOINT_BEFORE);
-					/* predicate value */
 					nvbit_add_call_arg_guard_pred_val(instr);
-					/* opcode id */
-					nvbit_add_call_arg_const_val32(instr, opcode_id);
-					/* memory reference 64 bit address */
+					nvbit_add_call_arg_const_val64(instr, instr_addr);
 					nvbit_add_call_arg_mref_addr64(instr, mref_idx);
 					/* add "space" for kernel function pointer that will be set
 					 * at launch time (64 bit value at offset 0 of the dynamic
 					 * arguments)*/
 					nvbit_add_call_arg_launch_val64(instr, 0);
-					/* add pointer to channel_dev*/
-					nvbit_add_call_arg_const_val64(
-						instr, (uint64_t)ctx_state->channel_dev);
+					nvbit_add_call_arg_const_val64(instr, (uint64_t)ctx_state->channel_dev);
 					mref_idx++;
 				}
 			}
@@ -282,39 +248,37 @@ void* recv_thread_fun(void* args) {
 	pthread_mutex_unlock(&mutex);
 	char* recv_buffer = (char*)malloc(CHANNEL_SIZE);
 
+	char buffer[4 * 1024];
 	bool done = false;
 	while (!done) {
-		/* receive buffer from channel */
 		uint32_t num_recv_bytes = ch_host->recv(recv_buffer, CHANNEL_SIZE);
-		if (num_recv_bytes > 0) {
-			uint32_t num_processed_bytes = 0;
-			while (num_processed_bytes < num_recv_bytes) {
-				mem_access_t* ma =
-					(mem_access_t*)&recv_buffer[num_processed_bytes];
+		uint32_t num_processed_bytes = 0;
+		while (num_processed_bytes < num_recv_bytes) {
+			mem_access_t* ma = (mem_access_t*) &recv_buffer[num_processed_bytes];
 
-				/* when we receive a CTA_id_x it means all the kernels
-				 * completed, this is the special token we receive from the
-				 * flush channel kernel that is issues at the end of the
-				 * context */
-				if (ma->cta_id_x == -1) {
-					done = true;
-					break;
-				}
-
-				std::stringstream ss;
-				ss << "CTX " << HEX(ctx) << " - grid_launch_id "
-				   << ma->grid_launch_id << " - CTA " << ma->cta_id_x << ","
-				   << ma->cta_id_y << "," << ma->cta_id_z << " - warp "
-				   << ma->warp_id << " - " << id_to_opcode_map[ma->opcode_id]
-				   << " - ";
-
-				for (int i = 0; i < 32; i++) {
-					ss << HEX(ma->addrs[i]) << " ";
-				}
-
-				printf("MEMTRACE: %s\n", ss.str().c_str());
-				num_processed_bytes += sizeof(mem_access_t);
+			/* when we receive a CTA_id_x it means all the kernels
+			 * completed, this is the special token we receive from the
+			 * flush channel kernel that is issues at the end of the
+			 * context */
+			if (ma->cta_id_x == -1) {
+				done = true;
+				break;
 			}
+
+			int length = 0;
+			length += sprintf(buffer+length, "MEMTRACE: ");
+			length += sprintf(buffer+length,
+				"CTX 0x%016jx - grid_launch_id %ju - %s 0x%016jx - CTA %d,%d,%d - warp %d - ",
+				(uint64_t) ctx, ma->grid_launch_id, addr_to_opcode_map[ma->instr_addr].c_str(), ma->instr_addr,
+				ma->cta_id_x, ma->cta_id_y, ma->cta_id_z, ma->warp_id
+			);
+			for (int i = 0; i < 32; i++) {
+				length += sprintf(buffer+length, "0x%016jx ", ma->addrs[i]);
+			}
+			length += sprintf(buffer+length, "\n");
+
+			fwrite(buffer, length, 1, stdout);
+			num_processed_bytes += sizeof(mem_access_t);
 		}
 	}
 	free(recv_buffer);
