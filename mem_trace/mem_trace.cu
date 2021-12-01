@@ -29,10 +29,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <semaphore.h>
 
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // Every tool needs to include this once.
 #include "nvbit_tool.h"
@@ -42,10 +45,17 @@
 #include "meminf_data.h"
 #include "common.h"
 
+#define SEM_CHECK(code) do { int _error = (code); if (_error) { fprintf(stderr, "Semaphore error in file '%s' in line %i: %s", __FILE__, __LINE__, strerror(errno)); exit(1); } } while (false)
+
 #define CHANNEL_SIZE (1l << 20)
 
 struct context_state_t {
-	FILE*       file;
+	FILE* file = nullptr;
+
+	header_t header;
+	std::vector<mem_region_t> mem_regions;
+
+	sem_t recv_done;
 	ChannelDev* channel_dev;
 	ChannelHost channel_host;
 };
@@ -57,8 +67,8 @@ bool skip_callback_flag = false;
 
 std::unordered_map<CUcontext, context_state_t*> ctx_state_map;
 std::unordered_set<CUfunction> already_instrumented;
-std::unordered_map<uint64_t, std::string> addr_to_opcode_map;
-uint64_t grid_launch_id = 0;
+std::map<uint64_t, std::string> addr_to_opcode_map;
+uint64_t next_grid_launch_id = 0;
 int next_channel_id = 0;
 
 // Global control variables for this tool.
@@ -172,34 +182,35 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
 			const char* func_name = nvbit_get_func_name(ctx, p->f);
 			uint64_t func_addr = nvbit_get_func_addr(p->f);
+			uint64_t current_grid_launch_id = next_grid_launch_id++;
 
-			nvbit_set_at_launch(ctx, p->f, &grid_launch_id, sizeof(uint64_t));
-			grid_launch_id++;
-
+			nvbit_set_at_launch(ctx, p->f, &current_grid_launch_id, sizeof(uint64_t));
 			nvbit_enable_instrumented(ctx, p->f, true);
 
 			printf(
 				"MEMTRACE: CTX 0x%016lx - LAUNCH - Kernel 0x%016lx - Kernel "
 				"name %s - grid launch id %ld - grid size %d,%d,%d - block "
 				"size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
-				(uint64_t)ctx, func_addr, func_name, grid_launch_id, p->gridDimX,
+				(uint64_t)ctx, func_addr, func_name, current_grid_launch_id, p->gridDimX,
 				p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
 				p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes,
 				(uint64_t)p->hStream
 			);
 
-			// fill allocation sizes from the driver API
-			for (auto &x : meminfs) {
+			// Record memory regions at launch time.
+			// TODO: Remove info from meminf array on free.
+			for (auto start_and_info : meminfs) {
 				size_t size;
-				if (cuPointerGetAttribute(&size, CU_POINTER_ATTRIBUTE_RANGE_SIZE, x.first) != CUDA_SUCCESS) {
+				if (cuPointerGetAttribute(&size, CU_POINTER_ATTRIBUTE_RANGE_SIZE, start_and_info.first) != CUDA_SUCCESS) {
 					fprintf(stderr, "Invalid meminf pointer\n");
 					exit(1);
 				}
-				x.second.size = size;
-			}
-			const char *names[] = { "framebuf", "nodes", "aabbs", "faces", "vtxpos", "vtxnrm" };
-			for (auto x : meminfs) {
-				std::cout << x.first << " +" << x.second.size << ": " << names[x.second.desc] << std::endl;
+				mem_region_t region = {};
+				region.grid_launch_id = current_grid_launch_id;
+				region.start = start_and_info.first;
+				region.size = size;
+				region.description = start_and_info.second.desc;
+				ctx_state->mem_regions.push_back(region);
 			}
 		}
 	}
@@ -235,6 +246,7 @@ void* recv_thread_func(void* args) {
 			}
 
 			if (file) {
+				ctx_state->header.mem_access_count++;
 				fwrite(ma, sizeof(mem_access_t), 1, file);
 			} else {
 				int length = 0;
@@ -255,6 +267,8 @@ void* recv_thread_func(void* args) {
 		}
 	}
 
+	SEM_CHECK(sem_post(&ctx_state->recv_done));
+
 	free(recv_buffer);
 	free(print_buffer);
 	return NULL;
@@ -272,10 +286,11 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 
 	if (verbose) printf("MEMTRACE: STARTING CONTEXT %p\n", ctx);
 	
-	context_state_t* ctx_state = (context_state_t*) malloc(sizeof(context_state_t));
-	memset(ctx_state, 0, sizeof(context_state_t));
+	context_state_t* ctx_state = new context_state_t{};
 	assert(ctx_state_map.find(ctx) == ctx_state_map.end());
 	ctx_state_map[ctx] = ctx_state;
+
+	memset(&ctx_state->header, 0, sizeof(header_t));
 
 	// TODO: If there are multiple contexts, they will all attempt to write to the same file.
 	if (!filename.empty()) {
@@ -284,7 +299,23 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 			fprintf(stderr, "Failed to create output file\n");
 			exit(1);
 		}
+
+		// Write blank header as placeholder.
+		fwrite(&ctx_state->header, sizeof(header_t), 1, ctx_state->file);
+
+		// Fill in static header values.
+		ctx_state->header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
+		ctx_state->header.version = 1;
+		ctx_state->header.header_size = sizeof(header_t);
+		ctx_state->header.mem_access_size = sizeof(mem_access_t);
+		ctx_state->header.mem_region_size = sizeof(mem_region_t);
+		ctx_state->header.addr_info_size = sizeof(addr_info_t);
+
+		// Start memory access area.
+		ctx_state->header.mem_access_offset = ftell(ctx_state->file);
 	}
+
+	SEM_CHECK(sem_init(&ctx_state->recv_done, 0, 0));
 	
 	cudaMallocManaged(&ctx_state->channel_dev, sizeof(ChannelDev));
 	ctx_state->channel_host.init(next_channel_id, CHANNEL_SIZE, ctx_state->channel_dev, recv_thread_func, ctx);
@@ -308,7 +339,39 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 	cudaDeviceSynchronize();
 	assert(cudaGetLastError() == cudaSuccess);
 
+	SEM_CHECK(sem_wait(&ctx_state->recv_done));
+
 	if (ctx_state->file) {
+		ctx_state->header.mem_region_count = ctx_state->mem_regions.size();
+		ctx_state->header.mem_region_offset = ftell(ctx_state->file);
+		fwrite(ctx_state->mem_regions.data(), sizeof(mem_region_t), ctx_state->mem_regions.size(), ctx_state->file);
+
+		uint64_t opcode_offset = ftell(ctx_state->file);
+		std::unordered_map<std::string, uint64_t> opcode_offsets;
+		for (auto& address_and_opcode : addr_to_opcode_map) {
+			std::string& opcode = address_and_opcode.second;
+			if (opcode_offsets.count(opcode) == 0) {
+				uint64_t current_offset = ftell(ctx_state->file) - opcode_offset;
+				opcode_offsets[opcode] = current_offset;
+				fwrite(opcode.c_str(), opcode.size()+1, 1, ctx_state->file);
+			}
+		}
+
+		ctx_state->header.opcode_offset = opcode_offset;
+		ctx_state->header.opcode_size   = ftell(ctx_state->file) - opcode_offset;
+
+		ctx_state->header.addr_info_count = addr_to_opcode_map.size();
+		ctx_state->header.addr_info_offset = ftell(ctx_state->file);
+		for (auto address_and_opcode : addr_to_opcode_map) {
+			addr_info_t info;
+			info.addr = address_and_opcode.first;
+			info.opcode_offset = opcode_offsets[address_and_opcode.second];
+			fwrite(&info, sizeof(addr_info_t), 1, ctx_state->file);
+		}
+
+		fseek(ctx_state->file, 0, SEEK_SET);
+		fwrite(&ctx_state->header, sizeof(header_t), 1, ctx_state->file);
+
 		int error = fclose(ctx_state->file);
 		if (error) {
 			fprintf(stderr, "Failed to write output file\n");
@@ -316,10 +379,12 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 		}
 	}
 
+	SEM_CHECK(sem_destroy(&ctx_state->recv_done));
+
 	ctx_state->channel_host.destroy(false);
 	cudaFree(ctx_state->channel_dev);
 	ctx_state_map.erase(ctx);
-	free(ctx_state);
+	delete ctx_state;
 
 	skip_callback_flag = false;
 	pthread_mutex_unlock(&mutex);

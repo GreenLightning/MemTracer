@@ -40,6 +40,6 @@ Command line options are:
 ```
 
 ```
-LD_PRELOAD=./mem_trace/libmem_trace.so 
+TOOL_FILENAME=trace.bin LD_PRELOAD=./mem_trace/libmem_trace.so 
 ./rt/rt -config ../workspace/data/config.toml -output test.png
 ```
