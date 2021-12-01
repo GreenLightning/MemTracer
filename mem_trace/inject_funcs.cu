@@ -33,11 +33,9 @@
 
 #include "common.h"
 
-extern "C" __device__ __noinline__ void instrument_mem(int pred, uint64_t instr_addr, uint64_t addr, uint64_t grid_launch_id, uint64_t pchannel_dev) {
+extern "C" __device__ __noinline__ void instrument_mem(int32_t pred, uint64_t instr_addr, uint64_t addr, uint64_t grid_launch_id, uint64_t pchannel_dev) {
 	/* if thread is predicated off, return */
-	if (!pred) {
-		return;
-	}
+	if (!pred) return;
 
 	int active_mask = __ballot_sync(__activemask(), 1);
 	const int laneid = get_laneid();
