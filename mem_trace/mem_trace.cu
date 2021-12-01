@@ -43,6 +43,7 @@
 #include "nvbit.h"
 #include "utils/channel.hpp"
 #include "meminf_data.h"
+#include "meow_hash_x64_aesni.h"
 #include "common.h"
 
 #define SEM_CHECK(code) do { int _error = (code); if (_error) { fprintf(stderr, "Semaphore error in file '%s' in line %i: %s", __FILE__, __LINE__, strerror(errno)); exit(1); } } while (false)
@@ -53,6 +54,7 @@ struct context_state_t {
 	FILE* file = nullptr;
 
 	header_t header;
+	meow_state hash_state;
 	std::vector<mem_region_t> mem_regions;
 
 	sem_t recv_done;
@@ -247,6 +249,7 @@ void* recv_thread_func(void* args) {
 
 			if (file) {
 				ctx_state->header.mem_access_count++;
+				MeowAbsorb(&ctx_state->hash_state, sizeof(mem_access_t), ma);
 				fwrite(ma, sizeof(mem_access_t), 1, file);
 			} else {
 				int length = 0;
@@ -291,6 +294,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 	ctx_state_map[ctx] = ctx_state;
 
 	memset(&ctx_state->header, 0, sizeof(header_t));
+	memset(&ctx_state->hash_state, 0, sizeof(meow_state));
 
 	// TODO: If there are multiple contexts, they will all attempt to write to the same file.
 	if (!filename.empty()) {
@@ -300,7 +304,10 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 			exit(1);
 		}
 
+		MeowBegin(&ctx_state->hash_state, MeowDefaultSeed);
+
 		// Write blank header as placeholder.
+		// The header is added to the hash at the end.
 		fwrite(&ctx_state->header, sizeof(header_t), 1, ctx_state->file);
 
 		// Fill in static header values.
@@ -344,6 +351,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 	if (ctx_state->file) {
 		ctx_state->header.mem_region_count = ctx_state->mem_regions.size();
 		ctx_state->header.mem_region_offset = ftell(ctx_state->file);
+		MeowAbsorb(&ctx_state->hash_state, sizeof(mem_region_t) * ctx_state->mem_regions.size(), ctx_state->mem_regions.data());
 		fwrite(ctx_state->mem_regions.data(), sizeof(mem_region_t), ctx_state->mem_regions.size(), ctx_state->file);
 
 		uint64_t opcode_offset = ftell(ctx_state->file);
@@ -353,6 +361,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 			if (opcode_offsets.count(opcode) == 0) {
 				uint64_t current_offset = ftell(ctx_state->file) - opcode_offset;
 				opcode_offsets[opcode] = current_offset;
+				MeowAbsorb(&ctx_state->hash_state, opcode.size()+1, (void*) opcode.c_str());
 				fwrite(opcode.c_str(), opcode.size()+1, 1, ctx_state->file);
 			}
 		}
@@ -366,8 +375,14 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 			addr_info_t info;
 			info.addr = address_and_opcode.first;
 			info.opcode_offset = opcode_offsets[address_and_opcode.second];
+			MeowAbsorb(&ctx_state->hash_state, sizeof(addr_info_t), &info);
 			fwrite(&info, sizeof(addr_info_t), 1, ctx_state->file);
 		}
+
+		MeowAbsorb(&ctx_state->hash_state, sizeof(header_t), &ctx_state->header);
+
+		meow_u128 hash = MeowEnd(&ctx_state->hash_state, nullptr);
+		memcpy(&ctx_state->header.hash, &hash, 128 / 8);
 
 		fseek(ctx_state->file, 0, SEEK_SET);
 		fwrite(&ctx_state->header, sizeof(header_t), 1, ctx_state->file);
