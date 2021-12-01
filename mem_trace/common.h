@@ -29,12 +29,12 @@
 
 /* information collected in the instrumentation function and passed
  * on the channel from the GPU to the CPU */
-typedef struct {
+struct mem_access_t {
     uint64_t instr_addr;
 	uint64_t grid_launch_id;
-	int cta_id_x;
-	int cta_id_y;
-	int cta_id_z;
-	int warp_id;
+	int32_t cta_id_x;
+	int32_t cta_id_y;
+	int32_t cta_id_z;
+	int32_t warp_id;
 	uint64_t addrs[32];
-} mem_access_t;
+};

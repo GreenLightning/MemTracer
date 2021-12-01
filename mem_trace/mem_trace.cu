@@ -30,9 +30,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <map>
-#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 // Every tool needs to include this once.
@@ -46,6 +45,7 @@
 #define CHANNEL_SIZE (1l << 20)
 
 struct context_state_t {
+	FILE*       file;
 	ChannelDev* channel_dev;
 	ChannelHost channel_host;
 };
@@ -57,7 +57,7 @@ bool skip_callback_flag = false;
 
 std::unordered_map<CUcontext, context_state_t*> ctx_state_map;
 std::unordered_set<CUfunction> already_instrumented;
-std::map<uint64_t, std::string> addr_to_opcode_map;
+std::unordered_map<uint64_t, std::string> addr_to_opcode_map;
 uint64_t grid_launch_id = 0;
 int next_channel_id = 0;
 
@@ -65,6 +65,7 @@ int next_channel_id = 0;
 uint32_t instr_begin_interval = 0;
 uint32_t instr_end_interval = UINT32_MAX;
 int verbose = 0;
+std::string filename = "";
 
 void nvbit_at_init() {
 	setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
@@ -75,6 +76,7 @@ void nvbit_at_init() {
 		instr_end_interval, "INSTR_END", UINT32_MAX,
 		"End of the instruction interval where to apply instrumentation");
 	GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
+	GET_VAR_STR(filename, "TOOL_FILENAME", "Output filename to write the trace into");
 	std::string pad(100, '-');
 	printf("%s\n", pad.c_str());
 
@@ -187,15 +189,15 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 			);
 
 			// fill allocation sizes from the driver API
-			const char *names[] = { "framebuf", "nodes", "aabbs", "faces", "vtxpos", "vtxnrm" };
 			for (auto &x : meminfs) {
 				size_t size;
 				if (cuPointerGetAttribute(&size, CU_POINTER_ATTRIBUTE_RANGE_SIZE, x.first) != CUDA_SUCCESS) {
-					std::cerr << "Invalid meminf pointer" << std::endl;
-					std::exit(1);
+					fprintf(stderr, "Invalid meminf pointer\n");
+					exit(1);
 				}
 				x.second.size = size;
 			}
+			const char *names[] = { "framebuf", "nodes", "aabbs", "faces", "vtxpos", "vtxnrm" };
 			for (auto x : meminfs) {
 				std::cout << x.first << " +" << x.second.size << ": " << names[x.second.desc] << std::endl;
 			}
@@ -213,6 +215,7 @@ void* recv_thread_func(void* args) {
 	assert(ctx_state_map.find(ctx) != ctx_state_map.end());
 	context_state_t* ctx_state = ctx_state_map[ctx];
 	ChannelHost* ch_host = &ctx_state->channel_host;
+	FILE* file = ctx_state->file;
 	pthread_mutex_unlock(&mutex);
 
 	char* recv_buffer = (char*)malloc(CHANNEL_SIZE);
@@ -231,18 +234,22 @@ void* recv_thread_func(void* args) {
 				break;
 			}
 
-			int length = 0;
-			length += sprintf(print_buffer+length, "MEMTRACE: ");
-			length += sprintf(print_buffer+length,
-				"CTX 0x%016lx - grid_launch_id %ju - %s 0x%016lx - CTA %d,%d,%d - warp %d - ",
-				(uint64_t) ctx, ma->grid_launch_id, addr_to_opcode_map[ma->instr_addr].c_str(), ma->instr_addr,
-				ma->cta_id_x, ma->cta_id_y, ma->cta_id_z, ma->warp_id
-			);
-			for (int i = 0; i < 32; i++) {
-				length += sprintf(print_buffer+length, "0x%016lx ", ma->addrs[i]);
+			if (file) {
+				fwrite(ma, sizeof(mem_access_t), 1, file);
+			} else {
+				int length = 0;
+				length += sprintf(print_buffer+length, "MEMTRACE: ");
+				length += sprintf(print_buffer+length,
+					"CTX 0x%016lx - grid_launch_id %ju - %s 0x%016lx - CTA %d,%d,%d - warp %d - ",
+					(uint64_t) ctx, ma->grid_launch_id, addr_to_opcode_map[ma->instr_addr].c_str(), ma->instr_addr,
+					ma->cta_id_x, ma->cta_id_y, ma->cta_id_z, ma->warp_id
+				);
+				for (int i = 0; i < 32; i++) {
+					length += sprintf(print_buffer+length, "0x%016lx ", ma->addrs[i]);
+				}
+				length += sprintf(print_buffer+length, "\n");
+				fwrite(print_buffer, length, 1, stdout);
 			}
-			length += sprintf(print_buffer+length, "\n");
-			fwrite(print_buffer, length, 1, stdout);
 
 			num_processed_bytes += sizeof(mem_access_t);
 		}
@@ -266,8 +273,18 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 	if (verbose) printf("MEMTRACE: STARTING CONTEXT %p\n", ctx);
 	
 	context_state_t* ctx_state = (context_state_t*) malloc(sizeof(context_state_t));
+	memset(ctx_state, 0, sizeof(context_state_t));
 	assert(ctx_state_map.find(ctx) == ctx_state_map.end());
 	ctx_state_map[ctx] = ctx_state;
+
+	// TODO: If there are multiple contexts, they will all attempt to write to the same file.
+	if (!filename.empty()) {
+		ctx_state->file = fopen(filename.c_str(), "wb");
+		if (!ctx_state->file) {
+			fprintf(stderr, "Failed to create output file\n");
+			exit(1);
+		}
+	}
 	
 	cudaMallocManaged(&ctx_state->channel_dev, sizeof(ChannelDev));
 	ctx_state->channel_host.init(next_channel_id, CHANNEL_SIZE, ctx_state->channel_dev, recv_thread_func, ctx);
@@ -290,6 +307,14 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 	// Make sure flush of channel is complete.
 	cudaDeviceSynchronize();
 	assert(cudaGetLastError() == cudaSuccess);
+
+	if (ctx_state->file) {
+		int error = fclose(ctx_state->file);
+		if (error) {
+			fprintf(stderr, "Failed to write output file\n");
+			exit(1);
+		}
+	}
 
 	ctx_state->channel_host.destroy(false);
 	cudaFree(ctx_state->channel_dev);
