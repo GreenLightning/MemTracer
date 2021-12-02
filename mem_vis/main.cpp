@@ -104,6 +104,7 @@ int main(int argc, char* argv[]) {
 	glfwSetKeyCallback(window, windowKeyCallback);
 	glfwSetMouseButtonCallback(window, windowMouseButtonCallback);
 	glfwSetCursorPosCallback(window, windowCursorPositionCallback);
+	glfwSetDropCallback(window, appDropCallback);
 
 	glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
 

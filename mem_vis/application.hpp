@@ -12,6 +12,7 @@ void appTerminate(GLFWwindow* window);
 void appKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 void appMouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void appCursorPositionCallback(GLFWwindow* window, double xpos, double ypos);
+void appDropCallback(GLFWwindow* window, int count, const char** paths);
 
 // width and height in pixels
 void appSetSize(GLFWwindow* window, int width, int height);

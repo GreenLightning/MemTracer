@@ -115,6 +115,12 @@ void appMouseButtonCallback(GLFWwindow* window, int button, int action, int mods
 
 void appCursorPositionCallback(GLFWwindow* window, double xpos, double ypos) {}
 
+void appDropCallback(GLFWwindow* window, int count, const char** paths) {
+	if (count >= 1) {
+		app.load(paths[count-1]);
+	}
+}
+
 void appSetSize(GLFWwindow* window, int width, int height) {
 	app.width = width;
 	app.height = height;
@@ -134,4 +140,5 @@ void appRender(GLFWwindow* window, float delta) {
 
 void appRenderGui(GLFWwindow* window, float delta) {
 	ImGui::Text(app.filename.c_str());
+	ImGui::Text(app.error.c_str());
 }
