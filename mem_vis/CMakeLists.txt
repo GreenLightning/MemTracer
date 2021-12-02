@@ -14,11 +14,11 @@ add_executable(mem_vis
 	"lib/imgui/imgui_impl_opengl3.cpp"
 )
 
+target_include_directories(mem_vis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
+target_include_directories(mem_vis PRIVATE "lib/imgui")
+
 # Set Working Directory in Visual Studio.
 set_property(TARGET mem_vis PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-
-# Imgui.
-target_include_directories(mem_vis PRIVATE "lib/imgui")
 
 # OpenGL.
 find_package(OpenGL REQUIRED)

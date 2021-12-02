@@ -18,3 +18,4 @@ set_source_files_properties(mem_trace.cu PROPERTIES COMPILE_FLAGS "-Xcompiler \"
 target_link_libraries(mem_trace_inject_funcs NVBit)
 target_link_libraries(mem_trace NVBit cuda $<TARGET_OBJECTS:mem_trace_inject_funcs> $<TARGET_OBJECTS:meminf_impl>)
 target_include_directories(mem_trace PRIVATE $<TARGET_PROPERTY:meminf_impl,INCLUDE_DIRECTORIES>)
+target_include_directories(mem_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
