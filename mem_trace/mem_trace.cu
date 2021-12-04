@@ -55,6 +55,7 @@ struct context_state_t {
 
 	header_t header;
 	meow_state hash_state;
+	std::vector<launch_info_t> launch_infos;
 	std::vector<mem_region_t> mem_regions;
 
 	sem_t recv_done;
@@ -199,6 +200,16 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 				(uint64_t)p->hStream
 			);
 
+			launch_info_t info = {};
+			info.grid_launch_id = current_grid_launch_id;
+			info.grid_dim_x = p->gridDimX;
+			info.grid_dim_y = p->gridDimY;
+			info.grid_dim_z = p->gridDimZ;
+			info.block_dim_x = p->blockDimX;
+			info.block_dim_y = p->blockDimY;
+			info.block_dim_z = p->blockDimZ;
+			ctx_state->launch_infos.push_back(info);
+
 			// Record memory regions at launch time.
 			// TODO: Remove info from meminf array on free.
 			for (auto start_and_info : meminfs) {
@@ -242,7 +253,7 @@ void* recv_thread_func(void* args) {
 			mem_access_t* ma = (mem_access_t*) &recv_buffer[num_processed_bytes];
 
 			// Check for signal from flush_channel that this was the last message.
-			if (ma->cta_id_x == -1) {
+			if (ma->instr_addr == UINT64_MAX) {
 				done = true;
 				break;
 			}
@@ -255,9 +266,9 @@ void* recv_thread_func(void* args) {
 				int length = 0;
 				length += sprintf(print_buffer+length, "MEMTRACE: ");
 				length += sprintf(print_buffer+length,
-					"CTX 0x%016lx - grid_launch_id %ju - %s 0x%016lx - CTA %d,%d,%d - warp %d - ",
+					"CTX 0x%016lx - grid_launch_id %ju - %s 0x%016lx - block %d,%d,%d - warp %d - ",
 					(uint64_t) ctx, ma->grid_launch_id, addr_to_opcode_map[ma->instr_addr].c_str(), ma->instr_addr,
-					ma->cta_id_x, ma->cta_id_y, ma->cta_id_z, ma->warp_id
+					ma->block_idx_x, ma->block_idx_y, ma->block_idx_z, ma->local_warp_id
 				);
 				for (int i = 0; i < 32; i++) {
 					length += sprintf(print_buffer+length, "0x%016lx ", ma->addrs[i]);
@@ -279,7 +290,7 @@ void* recv_thread_func(void* args) {
 
 __global__ void flush_channel(ChannelDev* ch_dev) {
 	mem_access_t ma = {};
-	ma.cta_id_x = -1;
+	ma.instr_addr = UINT64_MAX;
 	ch_dev->push(&ma, sizeof(mem_access_t));
 	ch_dev->flush();
 }
@@ -312,9 +323,10 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 
 		// Fill in static header values.
 		ctx_state->header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
-		ctx_state->header.version = 1;
+		ctx_state->header.version = 2;
 		ctx_state->header.header_size = sizeof(header_t);
 		ctx_state->header.mem_access_size = sizeof(mem_access_t);
+		ctx_state->header.launch_info_size = sizeof(launch_info_t);
 		ctx_state->header.mem_region_size = sizeof(mem_region_t);
 		ctx_state->header.addr_info_size = sizeof(addr_info_t);
 
@@ -349,6 +361,11 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 	SEM_CHECK(sem_wait(&ctx_state->recv_done));
 
 	if (ctx_state->file) {
+		ctx_state->header.launch_info_count = ctx_state->launch_infos.size();
+		ctx_state->header.launch_info_offset = ftell(ctx_state->file);
+		MeowAbsorb(&ctx_state->hash_state, sizeof(launch_info_t) * ctx_state->launch_infos.size(), ctx_state->launch_infos.data());
+		fwrite(ctx_state->launch_infos.data(), sizeof(launch_info_t), ctx_state->launch_infos.size(), ctx_state->file);
+
 		ctx_state->header.mem_region_count = ctx_state->mem_regions.size();
 		ctx_state->header.mem_region_offset = ftell(ctx_state->file);
 		MeowAbsorb(&ctx_state->hash_state, sizeof(mem_region_t) * ctx_state->mem_regions.size(), ctx_state->mem_regions.data());

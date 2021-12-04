@@ -50,8 +50,10 @@ struct Trace {
 			return "invalid file (magic)";
 		}
 
-		if (header.version != 1) {
-			return "file version is not supported";
+		if (header.version != 2) {
+			char buffer[256];
+			sprintf(buffer, "file version (%d) is not supported", header.version);
+			return buffer;
 		}
 
 		if (header.header_size < 120 || header.header_size > sizeof(header_t)) {
@@ -82,7 +84,7 @@ struct Trace {
 		Instruction* last = nullptr;
 		for (int i = 0; i < header.mem_access_count; i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			if (ma->cta_id_x != 1 || ma->cta_id_y != 1 || ma->cta_id_z != 0) continue;
+			if (ma->block_idx_x != 15 || ma->block_idx_y != 15 || ma->block_idx_z != 0 || ma->local_warp_id != 0) continue;
 			if (last == nullptr || ma->instr_addr != last->addr) {
 				Instruction instr;
 				instr.addr = ma->instr_addr;

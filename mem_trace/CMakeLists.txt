@@ -10,7 +10,7 @@ add_library(mem_trace_inject_funcs OBJECT inject_funcs.cu)
 add_library(mem_trace MODULE mem_trace.cu)
 
 set_property(TARGET mem_trace PROPERTY CUDA_SEPARABLE_COMPILATION ON)
-set_source_files_properties(inject_funcs.cu PROPERTIES COMPILE_FLAGS " -maxrregcount=24 -Xptxas -astoolspatch --keep-device-functions -arch=sm_35")
+set_source_files_properties(inject_funcs.cu PROPERTIES COMPILE_FLAGS " -maxrregcount=24 -Xptxas -astoolspatch --keep-device-functions -arch=sm_52")
 
 # For meow hash.
 set_source_files_properties(mem_trace.cu PROPERTIES COMPILE_FLAGS "-Xcompiler \"-mavx2 -maes\"")
