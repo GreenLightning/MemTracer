@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,14 +21,15 @@
 struct Instruction {
 	uint64_t    addr;
 	const char* opcode;
-	uint64_t    start;
-	uint64_t    count;
+	uint64_t    min = UINT64_MAX;
+	uint64_t    max = 0;
 };
 
 struct Trace {
 	std::string filename;
 	mio::mmap_source mmap;
 	header_t header = {};
+	std::map<uint64_t, Instruction> instructionsByAddr;
 	std::vector<Instruction> instructions;
 
 	~Trace() {
@@ -81,17 +83,13 @@ struct Trace {
 
 		// TODO: Validate other header fields.
 
-		Instruction* last = nullptr;
 		for (int i = 0; i < header.mem_access_count; i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			if (ma->block_idx_x != 15 || ma->block_idx_y != 15 || ma->block_idx_z != 0 || ma->local_warp_id != 0) continue;
-			if (last == nullptr || ma->instr_addr != last->addr) {
-				Instruction instr;
+			auto count = instructionsByAddr.count(ma->instr_addr);
+			Instruction& instr = instructionsByAddr[ma->instr_addr];
+			if (count == 0) {
 				instr.addr = ma->instr_addr;
 				instr.opcode = nullptr;
-				instr.start = i;
-				instr.count = 1;
-
 				for (int i = 0; i < header.addr_info_count; i++) {
 					addr_info_t* info = (addr_info_t*) &mmap[header.addr_info_offset + i * header.addr_info_size];
 					if (info->addr == instr.addr) {
@@ -99,17 +97,22 @@ struct Trace {
 						break;
 					}
 				}
-
-				instructions.push_back(instr);
-				last = &instructions[instructions.size()-1];
-			} else {
-				last->count++;
 			}
+			for (int i = 0; i < 32; i++) {
+				uint64_t addr = ma->addrs[i];
+				if (addr != 0) {
+					if (addr < instr.min) instr.min = addr;
+					if (addr > instr.max) instr.max = addr;
+				}
+			}
+		}
+
+		for (auto pair : instructionsByAddr) {
+			instructions.push_back(pair.second);
 		}
 
 		return "";
 	}
-
 };
 
 struct Application {
@@ -220,39 +223,103 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 	if (ImGui::Begin("Trace")) {
 		if (app.trace) {
+			auto& trace = app.trace;
 
-			ImGui::Text("Filename: %s", app.trace->filename.c_str());
+			ImGui::Text("Filename: %s", trace->filename.c_str());
 
 			meow_u128 hash;
-			memcpy(&hash, &app.trace->header.hash, 128 / 8);
+			memcpy(&hash, &trace->header.hash, 128 / 8);
 			ImGui::Text("Hash: %08X-%08X-%08X-%08X", MeowU32From(hash, 3), MeowU32From(hash, 2), MeowU32From(hash, 1), MeowU32From(hash, 0));
 
 			ImGui::Text("Instructions");
 
 			ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
-			if (ImGui::BeginTable("Instructions", 4, flags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {
+			float infosHeight = min((trace->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200);
+			if (ImGui::BeginTable("Launch Infos", 3, flags, ImVec2(0.0f, infosHeight))) {
+				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Grid Size", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Block Size", ImGuiTableColumnFlags_None);
+				ImGui::TableHeadersRow();
+
+				ImGuiListClipper clipper;
+				clipper.Begin(trace->header.launch_info_count);
+				while (clipper.Step()) {
+					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+						launch_info_t* info = (launch_info_t*) &trace->mmap[trace->header.launch_info_offset + row * trace->header.launch_info_size];
+						ImGui::TableNextRow();
+						ImGui::TableNextColumn();
+						ImGui::Text("%d", info->grid_launch_id);
+						ImGui::TableNextColumn();
+						ImGui::Text("%d,%d,%d", info->grid_dim_x, info->grid_dim_y, info->grid_dim_z);
+						ImGui::TableNextColumn();
+						ImGui::Text("%d,%d,%d", info->block_dim_x, info->block_dim_y, info->block_dim_z);
+					}
+				}
+				ImGui::EndTable();
+			}
+
+			float regionsHeight = min((trace->header.mem_region_count + 2) * ImGui::GetFrameHeight(), 200);
+			if (ImGui::BeginTable("Memory Regions", 6, flags, ImVec2(0.0f, regionsHeight))) {
+				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_None);
+				ImGui::TableHeadersRow();
+
+				ImGuiListClipper clipper;
+				clipper.Begin(trace->header.mem_region_count);
+				while (clipper.Step()) {
+					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+						mem_region_t* region = (mem_region_t*) &trace->mmap[trace->header.mem_region_offset + row * trace->header.mem_region_size];
+						ImGui::TableNextRow();
+						ImGui::TableNextColumn();
+						ImGui::Text("%d", region->grid_launch_id);
+						ImGui::TableNextColumn();
+						ImGui::Text("0x%016lx", region->start);
+						ImGui::TableNextColumn();
+						ImGui::Text("0x%016lx", region->start + region->size);
+						ImGui::TableNextColumn();
+						ImGui::Text("0x%016lx", region->size);
+						ImGui::TableNextColumn();
+						ImGui::Text("%ld", region->size);
+						ImGui::TableNextColumn();
+						ImGui::Text("%d", region->description);
+					}
+				}
+				ImGui::EndTable();
+			}
+
+			float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+			if (ImGui::BeginTable("Instructions", 5, flags, ImVec2(0.0f, instructionsHeight))) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_None);
 				ImGui::TableHeadersRow();
 
 				ImGuiListClipper clipper;
-				clipper.Begin(app.trace->instructions.size());
+				clipper.Begin(trace->instructions.size());
 				while (clipper.Step()) {
 					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-						Instruction& instr = app.trace->instructions[row];
+						Instruction& instr = trace->instructions[row];
 						ImGui::TableNextRow();
-						ImGui::TableSetColumnIndex(0);
+						ImGui::TableNextColumn();
 						ImGui::Text("%d", row);
-						ImGui::TableSetColumnIndex(1);
+						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", instr.addr);
-						ImGui::TableSetColumnIndex(2);
+						ImGui::TableNextColumn();
 						ImGui::Text("%s", instr.opcode);
-						ImGui::TableSetColumnIndex(3);
-						ImGui::Text("%d", instr.count);
+						ImGui::TableNextColumn();
+						ImGui::Text("0x%016lx", instr.min);
+						ImGui::TableNextColumn();
+						ImGui::Text("0x%016lx", instr.max);
 					}
 				}
 				ImGui::EndTable();
