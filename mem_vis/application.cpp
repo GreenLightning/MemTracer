@@ -122,22 +122,31 @@ struct GridInstruction {
 };
 
 struct Grid {
+	const int scale = 5;
+
 	int targetX = 107, targetY = 99;
 
 	Trace* cached_trace = nullptr;
 	uint64_t cached_grid_launch_id = UINT64_MAX;
+	int cached_target_x = -1, cached_target_y = -1;
 
 	std::vector<GridInstruction> instructions;
+	std::vector<int32_t> counts;
+	int32_t maxCount;
 	std::vector<uint8_t> image;
 	int imageWidth, imageHeight;
 
 	GLuint texture = 0;
 
 	void update(Trace* trace, uint64_t grid_launch_id) {
-		if (cached_trace == trace && cached_grid_launch_id == grid_launch_id) return;
+		if (cached_trace == trace && cached_grid_launch_id == grid_launch_id && cached_target_x == targetX && cached_target_y == targetY) return;
 
-		cached_trace = trace;
-		cached_grid_launch_id = grid_launch_id;
+		defer {
+			cached_trace = trace;
+			cached_grid_launch_id = grid_launch_id;
+			cached_target_x = targetX;
+			cached_target_y = targetY;
+		};
 
 		launch_info_t info = {};
 		if (trace) {
@@ -179,9 +188,32 @@ struct Grid {
 			}
 		}
 
-		int scale = 3;
 		int heightInThreads = info.grid_dim_y * info.block_dim_y;
 		int widthInThreads = info.grid_dim_x * info.block_dim_x;
+
+		if (trace != cached_trace || grid_launch_id != cached_grid_launch_id) {
+			counts.resize(heightInThreads * widthInThreads);
+			maxCount = 0;
+			if (trace) {
+				for (int i = 0; i < trace->header.mem_access_count; i++) {
+					mem_access_t* ma = (mem_access_t*) &trace->mmap[trace->header.mem_access_offset + i * trace->header.mem_access_size];
+					if (ma->grid_launch_id != grid_launch_id || ma->block_idx_z != 0) continue;
+
+					for (int i = 0; i < 32; i++) {
+						uint64_t addr = ma->addrs[i];
+						if (addr != 0) {
+							int threadIndex = ma->local_warp_id * 32 + i;
+							int threadX = ma->block_idx_x * info.block_dim_x + threadIndex % info.block_dim_x;
+							int threadY = ma->block_idx_y * info.block_dim_y + threadIndex / info.block_dim_x;
+							int count = counts[threadY * widthInThreads + threadX] + 1;
+							counts[threadY * widthInThreads + threadX] = count;
+							if (count > maxCount) maxCount = count;
+						}
+					}
+				}
+			}
+		}
+
 		imageHeight = scale * heightInThreads;
 		imageWidth = scale * widthInThreads;
 		int pitch = imageWidth * 3;
@@ -189,7 +221,10 @@ struct Grid {
 
 		for (int yt = 0; yt < heightInThreads; yt++) {
 			for (int xt = 0; xt < widthInThreads; xt++) {
-				uint32_t color = (yt == targetY && xt == targetX) ? 0xff0000 : 0xd9cd2e;
+				int c = counts[yt * widthInThreads + xt] * 255 / maxCount;
+				uint32_t color = (c << 16) | ((255 - c) << 8) | c; // 0xd9cd2e;
+				if (yt == targetY && xt == targetX) color = 0xffff00;
+
 				for (int yp = 0; yp < scale; yp++) {
 					for (int xp = 0; xp < scale; xp++) {
 						int y = yt * scale + yp;
@@ -203,7 +238,7 @@ struct Grid {
 		}
 
 		for (int yt = 0; yt < heightInThreads; yt++) {
-			int y = 3 * yt;
+			int y = yt * scale;
 			for (int x = 0; x < imageWidth; x++) {
 				image[y * pitch + x * 3 + 0] = 0x80;
 				image[y * pitch + x * 3 + 1] = 0x80;
@@ -212,7 +247,7 @@ struct Grid {
 		}
 
 		for (int xt = 0; xt < widthInThreads; xt++) {
-			int x = 3 * xt;
+			int x = xt * scale;
 			for (int y = 0; y < imageHeight; y++) {
 				image[y * pitch + x * 3 + 0] = 0x80;
 				image[y * pitch + x * 3 + 1] = 0x80;
@@ -221,7 +256,7 @@ struct Grid {
 		}
 
 		for (int yt = 0; yt < heightInThreads; yt += info.block_dim_y) {
-			int y = 3 * yt;
+			int y = yt * scale;
 			for (int x = 0; x < imageWidth; x++) {
 				image[y * pitch + x * 3 + 0] = 0x00;
 				image[y * pitch + x * 3 + 1] = 0x00;
@@ -230,7 +265,7 @@ struct Grid {
 		}
 
 		for (int xt = 0; xt < widthInThreads; xt += info.block_dim_x) {
-			int x = 3 * xt;
+			int x = xt * scale;
 			for (int y = 0; y < imageHeight; y++) {
 				image[y * pitch + x * 3 + 0] = 0x00;
 				image[y * pitch + x * 3 + 1] = 0x00;
@@ -473,8 +508,35 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	ImGui::End();
 
 	if (ImGui::Begin("Grid")) {
+		ImGui::InputInt("x", &app.grid.targetX);
+		ImGui::InputInt("y", &app.grid.targetY);
+
+		ImVec2 mousePos = ImGui::GetMousePos();
+		ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+		int x = mousePos.x - cursorPos.x;
+		int y = mousePos.y - cursorPos.y;
+
+		if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+			if (x >= 0 && x < app.grid.imageWidth && y >= 0 && y < app.grid.imageHeight) {
+				app.grid.targetX = x / app.grid.scale;
+				app.grid.targetY = y / app.grid.scale;
+			}
+		}
+
 		app.grid.update(app.trace.get(), 0);
+
 		ImGui::Image((void*)(intptr_t)app.grid.texture, ImVec2(app.grid.imageWidth, app.grid.imageHeight));
+
+		if (x >= 0 && x < app.grid.imageWidth && y >= 0 && y < app.grid.imageHeight) {
+			ImGui::Text("%d, %d", x, y);
+		} else {
+			ImGui::Text("-");
+		}
+	}
+	ImGui::End();
+
+	if (ImGui::Begin("Grid Instructions")) {
+		ImGui::Text("Count: %d", app.grid.instructions.size());
 
 		float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
 		if (ImGui::BeginTable("Instructions", 4, flags, ImVec2(0.0f, instructionsHeight))) {
