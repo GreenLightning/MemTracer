@@ -103,16 +103,6 @@ GLuint createProgram(std::string name) {
 	return program;
 }
 
-GLuint createWindowTexture() {
-	GLuint texture = 0;
-	glGenTextures(1, &texture);
-	glBindTexture(GL_TEXTURE_2D, texture);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glBindTexture(GL_TEXTURE_2D, 0);
-	return texture;
-}
-
 void ImGuiFullWidthImage(GLuint texture, float aspect /* width / height */) {
 	float width = ImGui::GetWindowWidth() - 25.0f;
 	float height = width / aspect;

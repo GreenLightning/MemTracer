@@ -18,8 +18,8 @@
 
 #include "application.hpp"
 
-struct Instruction {
-	uint64_t    addr;
+struct TraceInstruction {
+	uint64_t    instr_addr;
 	const char* opcode;
 	uint64_t    min = UINT64_MAX;
 	uint64_t    max = 0;
@@ -29,8 +29,8 @@ struct Trace {
 	std::string filename;
 	mio::mmap_source mmap;
 	header_t header = {};
-	std::map<uint64_t, Instruction> instructionsByAddr;
-	std::vector<Instruction> instructions;
+	std::map<uint64_t, TraceInstruction> instructionsByAddr;
+	std::vector<TraceInstruction> instructions;
 
 	~Trace() {
 		mmap.unmap();
@@ -54,7 +54,7 @@ struct Trace {
 
 		if (header.version != 2) {
 			char buffer[256];
-			sprintf(buffer, "file version (%d) is not supported", header.version);
+			snprintf(buffer, sizeof(buffer), "file version (%d) is not supported", header.version);
 			return buffer;
 		}
 
@@ -86,13 +86,13 @@ struct Trace {
 		for (int i = 0; i < header.mem_access_count; i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
 			auto count = instructionsByAddr.count(ma->instr_addr);
-			Instruction& instr = instructionsByAddr[ma->instr_addr];
+			TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
 			if (count == 0) {
-				instr.addr = ma->instr_addr;
+				instr.instr_addr = ma->instr_addr;
 				instr.opcode = nullptr;
 				for (int i = 0; i < header.addr_info_count; i++) {
 					addr_info_t* info = (addr_info_t*) &mmap[header.addr_info_offset + i * header.addr_info_size];
-					if (info->addr == instr.addr) {
+					if (info->addr == instr.instr_addr) {
 						instr.opcode = (const char*) &mmap[header.opcode_offset + info->opcode_offset];
 						break;
 					}
@@ -115,11 +115,150 @@ struct Trace {
 	}
 };
 
+struct GridInstruction {
+	uint64_t    instr_addr;
+	const char* opcode;
+	uint64_t    addr;
+};
+
+struct Grid {
+	int targetX = 107, targetY = 99;
+
+	Trace* cached_trace = nullptr;
+	uint64_t cached_grid_launch_id = UINT64_MAX;
+
+	std::vector<GridInstruction> instructions;
+	std::vector<uint8_t> image;
+	int imageWidth, imageHeight;
+
+	GLuint texture = 0;
+
+	void update(Trace* trace, uint64_t grid_launch_id) {
+		if (cached_trace == trace && cached_grid_launch_id == grid_launch_id) return;
+
+		cached_trace = trace;
+		cached_grid_launch_id = grid_launch_id;
+
+		launch_info_t info = {};
+		if (trace) {
+			for (int i = 0; i < trace->header.launch_info_count; i++) {
+				launch_info_t* current = (launch_info_t*) &trace->mmap[trace->header.launch_info_offset + i * trace->header.launch_info_size];
+				if (current->grid_launch_id == grid_launch_id) {
+					info = *current;
+					break;
+				}
+			}
+		}
+
+		instructions.clear();
+		if (trace) {
+			int targetBlockX = targetX / info.block_dim_x;
+			int targetBlockY = targetY / info.block_dim_y;
+			int targetThreadX = targetX % info.block_dim_x;
+			int targetThreadY = targetY % info.block_dim_y;
+			int targetThreadIndex = targetThreadY * info.block_dim_x + targetThreadX;
+			int targetWarpIndex = targetThreadIndex / 32;
+			int targetAccessIndex = targetThreadIndex % 32;
+
+			for (int i = 0; i < trace->header.mem_access_count; i++) {
+				mem_access_t* ma = (mem_access_t*) &trace->mmap[trace->header.mem_access_offset + i * trace->header.mem_access_size];
+				if (ma->grid_launch_id != grid_launch_id || ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex) continue;
+				
+				GridInstruction instr;
+				instr.instr_addr = ma->instr_addr;
+				instr.opcode = nullptr;
+				for (int i = 0; i < trace->header.addr_info_count; i++) {
+					addr_info_t* info = (addr_info_t*) &trace->mmap[trace->header.addr_info_offset + i * trace->header.addr_info_size];
+					if (info->addr == instr.instr_addr) {
+						instr.opcode = (const char*) &trace->mmap[trace->header.opcode_offset + info->opcode_offset];
+						break;
+					}
+				}
+				instr.addr = ma->addrs[targetAccessIndex];
+				instructions.push_back(instr);
+			}
+		}
+
+		int scale = 3;
+		int heightInThreads = info.grid_dim_y * info.block_dim_y;
+		int widthInThreads = info.grid_dim_x * info.block_dim_x;
+		imageHeight = scale * heightInThreads;
+		imageWidth = scale * widthInThreads;
+		int pitch = imageWidth * 3;
+		image.resize(imageHeight * pitch);
+
+		for (int yt = 0; yt < heightInThreads; yt++) {
+			for (int xt = 0; xt < widthInThreads; xt++) {
+				uint32_t color = (yt == targetY && xt == targetX) ? 0xff0000 : 0xd9cd2e;
+				for (int yp = 0; yp < scale; yp++) {
+					for (int xp = 0; xp < scale; xp++) {
+						int y = yt * scale + yp;
+						int x = xt * scale + xp;
+						image[y * pitch + x * 3 + 0] = (color >> 16);
+						image[y * pitch + x * 3 + 1] = (color >>  8);
+						image[y * pitch + x * 3 + 2] = (color >>  0);
+					}
+				}
+			}
+		}
+
+		for (int yt = 0; yt < heightInThreads; yt++) {
+			int y = 3 * yt;
+			for (int x = 0; x < imageWidth; x++) {
+				image[y * pitch + x * 3 + 0] = 0x80;
+				image[y * pitch + x * 3 + 1] = 0x80;
+				image[y * pitch + x * 3 + 2] = 0x80;
+			}
+		}
+
+		for (int xt = 0; xt < widthInThreads; xt++) {
+			int x = 3 * xt;
+			for (int y = 0; y < imageHeight; y++) {
+				image[y * pitch + x * 3 + 0] = 0x80;
+				image[y * pitch + x * 3 + 1] = 0x80;
+				image[y * pitch + x * 3 + 2] = 0x80;
+			}
+		}
+
+		for (int yt = 0; yt < heightInThreads; yt += info.block_dim_y) {
+			int y = 3 * yt;
+			for (int x = 0; x < imageWidth; x++) {
+				image[y * pitch + x * 3 + 0] = 0x00;
+				image[y * pitch + x * 3 + 1] = 0x00;
+				image[y * pitch + x * 3 + 2] = 0x00;
+			}
+		}
+
+		for (int xt = 0; xt < widthInThreads; xt += info.block_dim_x) {
+			int x = 3 * xt;
+			for (int y = 0; y < imageHeight; y++) {
+				image[y * pitch + x * 3 + 0] = 0x00;
+				image[y * pitch + x * 3 + 1] = 0x00;
+				image[y * pitch + x * 3 + 2] = 0x00;
+			}
+		}
+
+		if (!texture) {
+			glGenTextures(1, &texture);
+			glBindTexture(GL_TEXTURE_2D, texture);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glBindTexture(GL_TEXTURE_2D, 0);
+		}
+
+		glBindTexture(GL_TEXTURE_2D, texture);
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, imageWidth, imageHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, image.data());
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+};
+
 struct Application {
 	int width, height;
 	bool demo = false;
 
 	std::unique_ptr<Trace> trace;
+	Grid grid;
 	std::string status;
 };
 
@@ -206,6 +345,8 @@ void EndMainStatusBar() {
 }
 
 void appRenderGui(GLFWwindow* window, float delta) {
+	// Render gui.
+
 	if (ImGui::BeginMainMenuBar()) {
 		if (ImGui::BeginMenu("Help")) {
 			if (ImGui::MenuItem("ImGUI Demo", "", app.demo, true)) {
@@ -221,6 +362,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		EndMainStatusBar();
 	}
 
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
 	if (ImGui::Begin("Trace")) {
 		if (app.trace) {
 			auto& trace = app.trace;
@@ -232,8 +375,6 @@ void appRenderGui(GLFWwindow* window, float delta) {
 			ImGui::Text("Hash: %08X-%08X-%08X-%08X", MeowU32From(hash, 3), MeowU32From(hash, 2), MeowU32From(hash, 1), MeowU32From(hash, 0));
 
 			ImGui::Text("Instructions");
-
-			ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
 			float infosHeight = min((trace->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200);
 			if (ImGui::BeginTable("Launch Infos", 3, flags, ImVec2(0.0f, infosHeight))) {
@@ -308,12 +449,12 @@ void appRenderGui(GLFWwindow* window, float delta) {
 				clipper.Begin(trace->instructions.size());
 				while (clipper.Step()) {
 					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-						Instruction& instr = trace->instructions[row];
+						TraceInstruction& instr = trace->instructions[row];
 						ImGui::TableNextRow();
 						ImGui::TableNextColumn();
 						ImGui::Text("%d", row);
 						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", instr.addr);
+						ImGui::Text("0x%016lx", instr.instr_addr);
 						ImGui::TableNextColumn();
 						ImGui::Text("%s", instr.opcode);
 						ImGui::TableNextColumn();
@@ -327,6 +468,40 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 		} else {
 			ImGui::Text("Drag and drop a file over this window to open it.");
+		}
+	}
+	ImGui::End();
+
+	if (ImGui::Begin("Grid")) {
+		app.grid.update(app.trace.get(), 0);
+		ImGui::Image((void*)(intptr_t)app.grid.texture, ImVec2(app.grid.imageWidth, app.grid.imageHeight));
+
+		float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+		if (ImGui::BeginTable("Instructions", 4, flags, ImVec2(0.0f, instructionsHeight))) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			ImGuiListClipper clipper;
+			clipper.Begin(app.grid.instructions.size());
+			while (clipper.Step()) {
+				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+					GridInstruction& instr = app.grid.instructions[row];
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", row);
+					ImGui::TableNextColumn();
+					ImGui::Text("0x%016lx", instr.instr_addr);
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", instr.opcode);
+					ImGui::TableNextColumn();
+					ImGui::Text("0x%016lx", instr.addr);
+				}
+			}
+			ImGui::EndTable();
 		}
 	}
 	ImGui::End();

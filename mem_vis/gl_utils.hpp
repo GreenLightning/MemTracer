@@ -13,6 +13,4 @@
 
 GLuint createProgram(std::string name);
 
-GLuint createWindowTexture();
-
 void ImGuiFullWidthImage(GLuint texture, float aspect /* width / height */);
