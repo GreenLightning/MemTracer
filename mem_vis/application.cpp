@@ -291,6 +291,7 @@ struct Grid {
 struct Application {
 	int width, height;
 	bool demo = false;
+	uint64_t selected_instr_addr = UINT64_MAX;
 
 	std::unique_ptr<Trace> trace;
 	Grid grid;
@@ -485,9 +486,16 @@ void appRenderGui(GLFWwindow* window, float delta) {
 				while (clipper.Step()) {
 					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 						TraceInstruction& instr = trace->instructions[row];
+
 						ImGui::TableNextRow();
 						ImGui::TableNextColumn();
-						ImGui::Text("%d", row);
+						char label[32];
+						snprintf(label, sizeof(label), "%d", row);
+						ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+						if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
+							app.selected_instr_addr = instr.instr_addr;
+						}
+
 						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", instr.instr_addr);
 						ImGui::TableNextColumn();
@@ -554,9 +562,20 @@ void appRenderGui(GLFWwindow* window, float delta) {
 					GridInstruction& instr = app.grid.instructions[row];
 					ImGui::TableNextRow();
 					ImGui::TableNextColumn();
-					ImGui::Text("%d", row);
+					char label[32];
+					snprintf(label, sizeof(label), "%d", row);
+					ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+					if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
+						app.selected_instr_addr = instr.instr_addr;
+					}
+					
 					ImGui::TableNextColumn();
-					ImGui::Text("0x%016lx", instr.instr_addr);
+					if (row > 0 && instr.instr_addr <= app.grid.instructions[row-1].instr_addr) {
+						ImGui::TextColored(ImVec4{1, 0.5, 0.5, 1}, "0x%016lx", instr.instr_addr);
+					} else {
+						ImGui::Text("0x%016lx", instr.instr_addr);
+					}
+				
 					ImGui::TableNextColumn();
 					ImGui::Text("%s", instr.opcode);
 					ImGui::TableNextColumn();
