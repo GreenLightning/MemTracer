@@ -524,11 +524,11 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		int x = mousePos.x - cursorPos.x;
 		int y = mousePos.y - cursorPos.y;
 
-		if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-			if (x >= 0 && x < app.grid.imageWidth && y >= 0 && y < app.grid.imageHeight) {
-				app.grid.targetX = x / app.grid.scale;
-				app.grid.targetY = y / app.grid.scale;
-			}
+		ImRect bb(cursorPos, ImVec2(cursorPos.x + app.grid.imageWidth, cursorPos.y + app.grid.imageHeight));
+		ImGuiID id = ImGui::GetID("Texture");
+		if (ImGui::ButtonBehavior(bb, id, nullptr, nullptr, ImGuiButtonFlags_PressedOnClickRelease)) {
+			app.grid.targetX = x / app.grid.scale;
+			app.grid.targetY = y / app.grid.scale;
 		}
 
 		app.grid.update(app.trace.get(), 0);
