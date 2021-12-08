@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <imgui.h>
@@ -29,7 +30,7 @@ struct Trace {
 	std::string filename;
 	mio::mmap_source mmap;
 	header_t header = {};
-	std::map<uint64_t, TraceInstruction> instructionsByAddr;
+	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
 
 	~Trace() {
@@ -110,6 +111,10 @@ struct Trace {
 		for (auto pair : instructionsByAddr) {
 			instructions.push_back(pair.second);
 		}
+
+		std::sort(instructions.begin(), instructions.end(), [] (const TraceInstruction& a, const TraceInstruction& b) {
+			return a.instr_addr < b.instr_addr;
+		});
 
 		return "";
 	}
