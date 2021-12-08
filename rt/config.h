@@ -2,8 +2,8 @@
 
 #include <string>
 
-#include "bvh.h"
 #include "types.h"
+#include "bvh_types.h"
 
 struct Configuration {
 	std::string input;

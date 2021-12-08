@@ -330,7 +330,7 @@ __device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subt
 }
 
 
-__device__ void fragment_shader(const float *vin, const float *light, float *colout, bool hit_shadow)
+__device__ void computeColor(const float *vin, const float *light, float *colout, bool hit_shadow)
 {
 	float x = vin[0], y = vin[1], z = vin[2];
 	float nx = vin[3], ny = vin[4], nz = vin[5];
@@ -343,7 +343,7 @@ __device__ void fragment_shader(const float *vin, const float *light, float *col
 	colout[0] = min(max(1.f * dot, 0.f), 1.f) - (hit_shadow ? 0.5 : 0);
 }
 
-__global__ void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
+__global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
 {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
@@ -388,25 +388,21 @@ __global__ void TraceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 		}
 		bool hit_shadow = false;
 
-		fragment_shader(vertex, light, &res, hit_shadow);
+		computeColor(vertex, light, &res, hit_shadow);
 	}
 	framebuf[y * w + x] = res * 255;
 }
 
-void trace_gpu_sah(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax)
-{
-	std::cout << "Max lvl: " << maxlvl << " " << maxlvl * sizeof(StackEntry3) << std::endl;
-	std::cout << "Sizes: " << sizeof(FaceG) << " " << sizeof(Vtx) << " " << sizeof(VtxExtra) << std::endl;
-
+void trace(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax) {
 #ifdef __CUDACC__
 	dim3 blockd(8, 8);
 	dim3 gridd((w + blockd.x - 1) / blockd.x, (h + blockd.y - 1) / blockd.y);
-	TraceKernel<<<gridd, blockd>>>(0, 0, framebuf, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
+	traceKernel<<<gridd, blockd>>>(0, 0, framebuf, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
 	CUDA_CHECK_LAST_ERROR();
 #else
-	for (int y = 0; y < h; ++y) {
-		for (int x = 0; x < w; ++x) {
-			TraceKernel(x, y, framebuf, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			traceKernel(x, y, framebuf, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
 		}
 	}
 #endif
@@ -441,22 +437,21 @@ void my_download(void *dst, const void *src, std::size_t size) {
 	#endif
 }
 
-void trace(Configuration& config) {
+void run(Configuration& config) {
 	Mesh mesh = loadMesh(config.input);
 	mesh.compute_normals();
 	std::cout << "Mesh statistics: Faces: " << mesh.faces.size() << " Vertices: " << mesh.vertices.size() << std::endl;
 
-	BVHBuilder bvhb;
 	int nleafesmax = 32;
-	int tag = 0;
-	if (1||!bvhb.restore(config.input.c_str(), tag)) {
+	BVHBuilder bvhb;
+	{
 		std::vector<float> aabbs(mesh.faces.size() * 6);
 		std::vector<float> cens(mesh.faces.size() * 3);
 		for (uint32_t i = 0; i < mesh.faces.size(); ++i) {
-			const Face &face = mesh.faces[i];
-			const Vertex &v0 = mesh.vertices[face.idx[0]];
-			const Vertex &v1 = mesh.vertices[face.idx[1]];
-			const Vertex &v2 = mesh.vertices[face.idx[2]];
+			const Face& face = mesh.faces[i];
+			const Vertex& v0 = mesh.vertices[face.idx[0]];
+			const Vertex& v1 = mesh.vertices[face.idx[1]];
+			const Vertex& v2 = mesh.vertices[face.idx[2]];
 			
 			AABB aabb;
 			aabb.feed(v0.pos);
@@ -471,12 +466,7 @@ void trace(Configuration& config) {
 		}
 
 		bvhb.construct(cens.data(), aabbs.data(), mesh.faces.size(), nleafesmax, config.heuristic);
-
-		bvhb.backup(config.input.c_str(), tag);
-	} else {
-		std::cout << "Found a BVH backup!" << std::endl;
 	}
-
 	std::cout << "Got " << bvhb.num_nodes() << " nodes; bounds: " << bvhb.bounds.size() / 4 << std::endl;
 
 	image_b output(config.width, config.height, 1);
@@ -512,7 +502,7 @@ void trace(Configuration& config) {
 
 	std::cout << "Starting renderer" << std::endl;
 
-	trace_gpu_sah(framebuf, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, output.width(), output.height(), bvhb.maxlvl, config.camera, nleafesmax);
+	trace(framebuf, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, output.width(), output.height(), bvhb.maxlvl, config.camera, nleafesmax);
 
 	std::cout << "Download" << std::endl;
 	my_download((char*)output.data(), framebuf, output.width() * output.height());
@@ -622,7 +612,7 @@ int main(int argc, const char** argv) {
 	}
 
 	try {
-		trace(config);
+		run(config);
 		return 0;
 	} catch (const std::runtime_error& e) {
 		std::cerr << e.what() << std::endl;

@@ -1,7 +1,5 @@
 // Copyright (c) 2021, Max von Buelow, GRIS, Technical University of Darmstadt
 
-#include "bvh.h"
-
 #include <algorithm>
 #include <iostream>
 #include <numeric>
@@ -13,8 +11,9 @@
 
 #include "vec.h"
 
-#define NBINS 256
+#include "bvh.h"
 
+#define NBINS 256
 
 struct SplitX {
 	uint32_t o, l;
@@ -31,16 +30,12 @@ struct SplitX {
 
 void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf, Heuristic heuristic)
 {
-	int max_axis = 3; // TODO
+	int max_axis = 3;
 	uint32_t leafminsplitcount = nleaf + (nleaf & 1) + 2;
-
-// 	std::cout << "Overall surface: " << surface_all << std::endl;
 
 	std::vector<uint32_t> perm(n);
 	std::vector<uint32_t> tree;
 	std::iota(perm.begin(), perm.begin() + n, 0);
-
-// 	std::cout << "Initial compontents: " << compontents << std::endl;
 
 	std::deque<SplitX> S;
 	
@@ -195,5 +190,5 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf
 		S.emplace_back(o + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT);
 		S.emplace_back(o, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT);
 	}
-	this->setmaxlvl(maxlevel);
+	this->maxlvl = maxlevel;
 }
