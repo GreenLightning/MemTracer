@@ -119,6 +119,7 @@ struct GridInstruction {
 	uint64_t    instr_addr;
 	const char* opcode;
 	uint64_t    addr;
+	int32_t     description;
 };
 
 struct Grid {
@@ -171,7 +172,7 @@ struct Grid {
 
 			for (int i = 0; i < trace->header.mem_access_count; i++) {
 				mem_access_t* ma = (mem_access_t*) &trace->mmap[trace->header.mem_access_offset + i * trace->header.mem_access_size];
-				if (ma->grid_launch_id != grid_launch_id || ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex) continue;
+				if (ma->grid_launch_id != grid_launch_id || ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex || ma->addrs[targetAccessIndex] == 0) continue;
 				
 				GridInstruction instr;
 				instr.instr_addr = ma->instr_addr;
@@ -184,6 +185,15 @@ struct Grid {
 					}
 				}
 				instr.addr = ma->addrs[targetAccessIndex];
+				instr.description = -1;
+				for (int i = 0; i < trace->header.mem_region_count; i++) {
+					mem_region_t* region = (mem_region_t*) &trace->mmap[trace->header.mem_region_offset + i * trace->header.mem_region_size];
+					if (region->grid_launch_id != grid_launch_id) continue;
+					if (region->start <= instr.addr && instr.addr < region->start + region->size) {
+						instr.description = region->description;
+						break;
+					}
+				}
 				instructions.push_back(instr);
 			}
 		}
@@ -547,12 +557,13 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		ImGui::Text("Count: %d", app.grid.instructions.size());
 
 		float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-		if (ImGui::BeginTable("Instructions", 4, flags, ImVec2(0.0f, instructionsHeight))) {
+		if (ImGui::BeginTable("Instructions", 5, flags, ImVec2(0.0f, instructionsHeight))) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
 			ImGui::TableHeadersRow();
 
 			ImGuiListClipper clipper;
@@ -580,6 +591,10 @@ void appRenderGui(GLFWwindow* window, float delta) {
 					ImGui::Text("%s", instr.opcode);
 					ImGui::TableNextColumn();
 					ImGui::Text("0x%016lx", instr.addr);
+					ImGui::TableNextColumn();
+					if (instr.description >= 0) {
+						ImGui::Text("%d", instr.description);
+					}
 				}
 			}
 			ImGui::EndTable();
