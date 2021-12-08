@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "vec.h"
+#include "cuda.h"
 
 struct Camera {
 	float x = 0, y = 0, z = 0;
@@ -24,18 +25,16 @@ struct Vertex {
 // 	float nrm[3];
 
 	Vertex() {}
-	Vertex(float x, float y, float z) : pos{ x, y, z }
-	{}
-	Vertex(const Vertex &vtx) : pos{ vtx.pos[0], vtx.pos[1], vtx.pos[2], vtx.pos[3], vtx.pos[4], vtx.pos[5] }
-	{}
+	Vertex(float x, float y, float z) : pos{ x, y, z } {}
+	Vertex(const Vertex &vtx) : pos{ vtx.pos[0], vtx.pos[1], vtx.pos[2], vtx.pos[3], vtx.pos[4], vtx.pos[5] } {}
 };
 
 struct Face {
 	uint32_t idx[3];
 
-	Face() {}
-	Face(uint32_t a, uint32_t b, uint32_t c) : idx{ a, b, c } {}
-	Face(const Face &face) : Face(face.idx[0], face.idx[1], face.idx[2]) {}
+	__device__ __host__ Face() {}
+	__device__ __host__ Face(uint32_t a, uint32_t b, uint32_t c) : idx{ a, b, c } {}
+	__device__ __host__ Face(const Face &face) : Face(face.idx[0], face.idx[1], face.idx[2]) {}
 };
 
 struct Mesh {

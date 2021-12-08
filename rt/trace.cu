@@ -56,9 +56,6 @@ __host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, co
 	else return false; // This means that there is a line intersection but not a ray intersection.
 }
 
-struct FaceG {
-	uint32_t idx[3];
-};
 struct Vtx {
 	float v[3];
 	__host__ __device__ Vtx()
@@ -147,10 +144,10 @@ struct HitPoint {
 	float u, v;
 };
 struct LeavesBVH {
-	const FaceG *tris;
+	const Face *tris;
 	const Vtx *vtx;
 	int nleafesmax;
-	__device__ LeavesBVH(const FaceG *_tris, const Vtx *_vtx, int nleafesmax) : tris(_tris), vtx(_vtx), nleafesmax(nleafesmax)
+	__device__ LeavesBVH(const Face *_tris, const Vtx *_vtx, int nleafesmax) : tris(_tris), vtx(_vtx), nleafesmax(nleafesmax)
 	{}
 	__device__ uint32_t get_off(uint32_t li) const
 	{
@@ -158,7 +155,7 @@ struct LeavesBVH {
 	}
 	__device__ bool intersect(float &t, HitPoint *hitpoint, uint32_t idx, uint32_t nchilds, const float *rayorg, const float *raydir) const
 	{
-		FaceG f = tris[idx];
+		Face f = tris[idx];
 		Vtx a = vtx[f.idx[0]];
 		Vtx b = vtx[f.idx[1]];
 		Vtx c = vtx[f.idx[2]];
@@ -284,7 +281,7 @@ __device__ void computeColor(const float *vin, const float *light, float *colout
 	colout[0] = min(max(1.f * dot, 0.f), 1.f) - (hit_shadow ? 0.5 : 0);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const FaceG *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
+__global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *subtrees, const float *bounds, const Face *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax)
 {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
@@ -310,7 +307,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 		float v = hitpoint.v;
 		uint32_t idx = hitpoint.idx;
 
-		FaceG f = lv.tris[idx];
+		Face f = lv.tris[idx];
 
 		// load hit vertices completely
 		Vtx v0 = lv.vtx[f.idx[0]];
@@ -333,7 +330,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 	framebuf[y * w + x] = res * 255;
 }
 
-void trace(uint8_t *framebuf, uint32_t *subtrees, float *bounds, FaceG *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax) {
+void trace(uint8_t *framebuf, uint32_t *subtrees, float *bounds, Face *faces, Vtx *vtx, VtxExtra *vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax) {
 #ifdef __CUDACC__
 	dim3 blockd(8, 8);
 	dim3 gridd((w + blockd.x - 1) / blockd.x, (h + blockd.y - 1) / blockd.y);
@@ -417,7 +414,7 @@ void run(Configuration& config) {
 	float *d_bounds = (float*)my_malloc(bvhb.bounds.size() * 4 * 6, 2);
 	my_upload(d_bounds, (const char*)bvhb.bounds.data(), bvhb.bounds.size() * 4 * 6);
 
-	FaceG *d_tris = (FaceG*)my_malloc(trispermuted.size() * 4 * 3, 3);
+	Face *d_tris = (Face*)my_malloc(trispermuted.size() * 4 * 3, 3);
 	Vtx *d_vtx = (Vtx*)my_malloc(mesh.vertices.size() * sizeof(Vtx), 4);
 	VtxExtra *d_vtxextra = (VtxExtra*)my_malloc(mesh.vertices.size() * sizeof(VtxExtra), 5);
 
