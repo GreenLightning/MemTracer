@@ -2,7 +2,6 @@
 
 #include <cfloat>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -12,62 +11,14 @@
 
 #include "image.h"
 
+#include "cuda.h"
+#include "check.h"
 #include "bvh.h"
 #include "config.h"
 #include "types.h"
 
 #ifdef MEMINF_ENABLED
 	#include "meminf.h"
-#endif
-
-#ifdef __CUDACC__
-	#include <cuda_runtime.h>
-#endif
-
-#ifndef __CUDACC__
-	template <typename T> T min(T a, T b) {
-		return a < b ? a : b;
-	}
-
-	template <typename T> T max(T a, T b) {
-		return a > b ? a : b;
-	}
-
-	struct float4 { float x, y, z, w; };
-
-	#define __host__
-	#define __device__
-	#define __global__
-#endif
-
-#ifdef __CUDACC__
-
-	// Here are some macros to check cuda error codes in debug builds.
-	// Just wrap a function that returns a cuda error with CUDA_CHECK():
-	//
-	//     CUDA_CHECK(cudaMalloc(...));
-	//
-	// You can also use CUDA_CHECK_LAST_ERROR() to check the last error
-	// as returned by cudaGetLastError(). The reason this is a separate macro
-	// is that CUDA_CHECK(cudaGetLastError()) would still call cudaGetLastError()
-	// in release mode, which resets the last error, but the returned code
-	// is not checked in that mode. Therefore CUDA_CHECK_LAST_ERROR()
-	// is preferred.
-
-	#define CUDA_CHECK(code) { cudaError_t _cudaCheckError = (code); cudaCheck(_cudaCheckError , __FILE__, __LINE__); }
-	#define CUDA_CHECK_LAST_ERROR() CUDA_CHECK(cudaGetLastError())
-
-	inline void cudaCheck(cudaError_t err, const char* file, int line) {
-		if (err != cudaSuccess) {
-			std::cerr << file << ":" << line << ": " << cudaGetErrorString(err) << " (" << err << ")" << std::endl;
-		}
-	}
-
-#else
-
-	#define CUDA_CHECK(code) (code)
-	#define CUDA_CHECK_LAST_ERROR()
-
 #endif
 
 __host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *rayorg, const float *raydir, const float *v0, const float *v1, const float *v2)
@@ -127,34 +78,24 @@ struct VtxExtra {
 	{}
 };
 
+__device__ Ray makeViewRay(float x, float y, float w, float h, const Camera& cam) {
+	Ray ray;
 
-__device__ void g_mkray(float *rayorg, float *raydir, int x, int y, int w, int h, float ox, float oy, float oz, const float *M, float fov = 3)
-{
-	float a = w / h; // assuming width > height 
-	float Px = (2 * ((x + 0.5) / w) - 1) * tan(fov / 2 * M_PI / 180) * a;
-	float Py = (1 - 2 * ((y + 0.5) / h)) * tan(fov / 2 * M_PI / 180);
+	// t is half of the height of the image plane at unit distance from the camera center.
+	float t = tan(cam.vertical_fov / 2.0f * M_PI / 180.0f);
+	float px = +(2.0f * (x / w) - 1.0f) * t * w / h;
+	float py = -(2.0f * (y / h) - 1.0f) * t;
 
+	ray.origin = vec3(cam.x, cam.y, cam.z);
 
-// 	raydir[0] = Px;
-// 	raydir[1] = Py;
-// 	raydir[2] = -1;
-
-	float indir[] = { Px, Py, -1 };
-	for (int i = 0; i < 3; ++i) {
-		float acc = 0;
-		for (int j = 0; j < 3; ++j) {
-			acc += M[i * 3 + j] * indir[j];
-		}
-		raydir[i] = acc;
+	// Compute the matrix-vector product between cam.mat and dir and store the result in ray.dir.
+	vec3 dir = vec3(px, py, -1);
+	for (int i = 0; i < 3; i++) {
+		ray.dir[i] = dot(vec3(&cam.mat[3*i]), dir);
 	}
 
-	rayorg[0] = ox;
-	rayorg[1] = oy;
-	rayorg[2] = oz;
-// 	ray.normalize();
+	return ray;
 }
-
-
 
 template <typename T>
 __device__ void swap(T &a, T &b)
@@ -353,8 +294,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 
 	static const float light[] = { 50, 220, 1140 };
 
-	float rayorg[3], raydir[3];
-	g_mkray(rayorg, raydir, x, y, w, h, cam.x, cam.y, cam.z, cam.mat, cam.fov);
+	Ray ray = makeViewRay(x + 0.5f, y + 0.5f, w, h, cam);
 
 	float t = FLT_MAX;
 	HitPoint hitpoint;
@@ -362,7 +302,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 	BoundsBVH bo(bounds);
 	LeavesBVH lv(faces, vtx, nleafesmax);
 
-	bool hit = trace3<const uint32_t*, BoundsBVH, LeavesBVH, 5 * 4>(t, &hitpoint, subtrees, bo, lv, rayorg, raydir);
+	bool hit = trace3<const uint32_t*, BoundsBVH, LeavesBVH, 5 * 4>(t, &hitpoint, subtrees, bo, lv, &ray.origin.x, &ray.dir.x);
 
 	float res = 1;
 	if (hit) {

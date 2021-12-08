@@ -64,7 +64,7 @@ void loadConfiguration(Configuration& config, const std::string& path) {
 
 		if (camera.contains("vertical_fov")) {
 			auto value = toml::find(camera, "vertical_fov");
-			config.camera.fov = value.is_floating() ? value.as_floating(std::nothrow) : static_cast<double>(value.as_integer());
+			config.camera.vertical_fov = value.is_floating() ? value.as_floating(std::nothrow) : static_cast<double>(value.as_integer());
 		}
 	}
 }
