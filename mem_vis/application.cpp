@@ -22,6 +22,7 @@
 struct TraceInstruction {
 	uint64_t    instr_addr;
 	const char* opcode;
+	uint64_t    count = 0;
 	uint64_t    min = UINT64_MAX;
 	uint64_t    max = 0;
 };
@@ -102,6 +103,7 @@ struct Trace {
 			for (int i = 0; i < 32; i++) {
 				uint64_t addr = ma->addrs[i];
 				if (addr != 0) {
+					instr.count++;
 					if (addr < instr.min) instr.min = addr;
 					if (addr > instr.max) instr.max = addr;
 				}
@@ -487,11 +489,12 @@ void appRenderGui(GLFWwindow* window, float delta) {
 			}
 
 			float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-			if (ImGui::BeginTable("Instructions", 5, flags, ImVec2(0.0f, instructionsHeight))) {
+			if (ImGui::BeginTable("Instructions", 6, flags, ImVec2(0.0f, instructionsHeight))) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_None);
 				ImGui::TableHeadersRow();
@@ -515,6 +518,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGui::Text("0x%016lx", instr.instr_addr);
 						ImGui::TableNextColumn();
 						ImGui::Text("%s", instr.opcode);
+						ImGui::TableNextColumn();
+						ImGui::Text("%d", instr.count);
 						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", instr.min);
 						ImGui::TableNextColumn();
