@@ -10,6 +10,7 @@
 #include <stack>
 #include <unordered_set>
 #include <vector>
+
 #include "vec.h"
 
 #define NBINS 256
@@ -101,13 +102,13 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf
 					maxs_r[axis * NBINS + jj / binsize] = max_r;
 				}
 				if (j < l) {
-					min_l = min3(min_l, vec3(aabbs + dp[j] * 6));
-					max_l = max3(max_l, vec3(aabbs + dp[j] * 6 + 3));
+					min_l = min(min_l, vec3(aabbs + dp[j] * 6));
+					max_l = max(max_l, vec3(aabbs + dp[j] * 6 + 3));
 				}
 
 				if (jj < l) {
-					min_r = min3(min_r, vec3(aabbs + dp[jj] * 6));
-					max_r = max3(max_r, vec3(aabbs + dp[jj] * 6 + 3));
+					min_r = min(min_r, vec3(aabbs + dp[jj] * 6));
+					max_r = max(max_r, vec3(aabbs + dp[jj] * 6 + 3));
 				}
 
 				if (j % binsize == binsize - 1) {
