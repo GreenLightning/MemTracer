@@ -415,8 +415,12 @@ void run(Configuration& config) {
 
 	auto t6 = std::chrono::high_resolution_clock::now();
 
-	std::cout << "Saving..." << std::endl;
-	image_io::save(output, config.output.c_str());
+	if (!config.output.empty()) {
+		std::cout << "Saving..." << std::endl;
+		image_io::save(output, config.output.c_str());
+	} else {
+		std::cout << "No output file specified" << std::endl;
+	}
 
 	auto t7 = std::chrono::high_resolution_clock::now();
 
@@ -426,7 +430,10 @@ void run(Configuration& config) {
 	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(t4 - t3).count());
 	printf("Render:    %0.9fs\n", std::chrono::duration<double>(t5 - t4).count());
 	printf("Download:  %0.9fs\n", std::chrono::duration<double>(t6 - t5).count());
+	if (!config.output.empty()) {
 	printf("Save:      %0.9fs\n", std::chrono::duration<double>(t7 - t6).count());
+	}
+
 	fflush(stdout);
 }
 
@@ -533,10 +540,6 @@ int main(int argc, const char** argv) {
 
 	if (config.input.empty()) {
 		std::cerr << "no input file specified, use -input or -config" << std::endl;
-		return 1;
-	}
-	if (config.output.empty()) {
-		std::cerr << "no output file specified, use -output or -config" << std::endl;
 		return 1;
 	}
 	if (config.width == 0 || config.height == 0) {
