@@ -21,18 +21,8 @@
 	#include "meminf.h"
 #endif
 
-struct Vtx {
-	float v[3];
-	__host__ __device__ Vtx() {}
-	__host__ __device__ Vtx(const Vtx &vtx) : v{ vtx.v[0], vtx.v[1], vtx.v[2] } {}
-	__host__ __device__ Vtx(float a, float b, float c) : v{ a, b, c } {}
-};
-
-struct VtxExtra {
-	float v[3];
-	__host__ __device__ VtxExtra() {}
-	__host__ __device__ VtxExtra(const VtxExtra &vtx) : v{ vtx.v[0], vtx.v[1], vtx.v[2] } {}
-	__host__ __device__ VtxExtra(float a, float b, float c) : v{ a, b, c } {}
+struct VertexData {
+	vec3 normal;
 };
 
 struct HitPoint {
@@ -95,7 +85,7 @@ __device__ void intersectRayAABBs(const Ray& ray, const float* b, float& t1l, fl
 	}
 }
 
-__device__ bool intersectRayTriangle(const Ray& ray, const float* v0, const float* v1, const float* v2, float& t, float& uu, float& vv) {
+__device__ bool intersectRayTriangle(const Ray& ray, const vec3& v0, const vec3& v1, const vec3& v2, float& t, float& uu, float& vv) {
 	// from wikipedia moeller trumbore
 	const float EPSILON = FLT_EPSILON;
 
@@ -129,14 +119,14 @@ __device__ bool intersectRayTriangle(const Ray& ray, const float* v0, const floa
 	else return false; // This means that there is a line intersection but not a ray intersection.
 }
 
-__device__ bool intersectRayTriangle2(const Ray& ray, const Face* faces, const Vtx* vertices, uint32_t idx, float &t, HitPoint* hitpoint) {
+__device__ bool intersectRayTriangle2(const Ray& ray, const Face* faces, const vec3* vertices, uint32_t idx, float &t, HitPoint* hitpoint) {
 	Face f = faces[idx];
-	Vtx a = vertices[f.idx[0]];
-	Vtx b = vertices[f.idx[1]];
-	Vtx c = vertices[f.idx[2]];
+	vec3 a = vertices[f.idx[0]];
+	vec3 b = vertices[f.idx[1]];
+	vec3 c = vertices[f.idx[2]];
 
 	float u, v;
-	if (!intersectRayTriangle(ray, a.v, b.v, c.v, t, u, v)) return false;
+	if (!intersectRayTriangle(ray, a, b, c, t, u, v)) return false;
 
 	hitpoint->idx = idx;
 	hitpoint->u = u;
@@ -150,7 +140,7 @@ struct StackEntry {
 	uint32_t idx, leaves;
 };
 
-__device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t *subtrees, const float* bounds, const Face *faces, const Vtx *vtx, int nleafesmax, const Ray& ray) {
+__device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t *subtrees, const float* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
 	bool hit = false;
 	float t0 = 0, t1 = FLT_MAX;
 
@@ -166,11 +156,11 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 
 			uint32_t nn = left_subtree;
 
-			uint32_t off = li * nleafesmax;
+			uint32_t off = li * maxLeaves;
 			for (int i = 0; i < nn; ++i) {
 				float tt = FLT_MAX;
 				HitPoint hitpoint_tmp;
-				bool bhit = intersectRayTriangle2(ray, faces, vtx, off + i, tt, &hitpoint_tmp);
+				bool bhit = intersectRayTriangle2(ray, faces, vertices, off + i, tt, &hitpoint_tmp);
 				bhit &= tt < t;
 				if (bhit) {
 					t = tt;
@@ -244,7 +234,7 @@ __device__ vec3 computeColor(const float *vin, const float *light, bool hit_shad
 	return vec3(v, v, v);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *subtrees, const float *bounds, const Face *faces, const Vtx *vtx, const VtxExtra *ve, uint32_t w, uint32_t h, Camera cam, int nleafesmax) {
+__global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *subtrees, const float *bounds, const Face *faces, const vec3* vertices, const VertexData* vertexData, uint32_t w, uint32_t h, Camera cam, int maxLeaves) {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
 	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
@@ -257,28 +247,29 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *
 
 	float t = FLT_MAX;
 	HitPoint hitpoint;
-	bool hit = traverseBVH(t, &hitpoint, subtrees, bounds, faces, vtx, nleafesmax, ray);
+	bool hit = traverseBVH(t, &hitpoint, subtrees, bounds, faces, vertices, maxLeaves, ray);
 
 	vec3 color;
 	if (hit) {
 		float u = hitpoint.u;
 		float v = hitpoint.v;
+		float w = 1.0f - u - v;
 
 		Face f = faces[hitpoint.idx];
 
 		// load hit vertices completely
-		Vtx v0 = vtx[f.idx[0]];
-		Vtx v1 = vtx[f.idx[1]];
-		Vtx v2 = vtx[f.idx[2]];
-		VtxExtra v0e = ve[f.idx[0]];
-		VtxExtra v1e = ve[f.idx[1]];
-		VtxExtra v2e = ve[f.idx[2]];
+		vec3 v0 = vertices[f.idx[0]];
+		vec3 v1 = vertices[f.idx[1]];
+		vec3 v2 = vertices[f.idx[2]];
+		VertexData d0 = vertexData[f.idx[0]];
+		VertexData d1 = vertexData[f.idx[1]];
+		VertexData d2 = vertexData[f.idx[2]];
 
 		// lerp
 		float vertex[6];
 		for (int i = 0; i < 3; ++i) {
-			vertex[i] = v0.v[i] * (1.f - u - v) + v1.v[i] * u + v2.v[i] * v;
-			vertex[3 + i] = v0e.v[i] * (1.f - u - v) + v1e.v[i] * u + v2e.v[i] * v;
+			vertex[i] = v0[i] * w + v1[i] * u + v2[i] * v;
+			vertex[3 + i] = d0.normal[i] * w + d1.normal[i] * u + d2.normal[i] * v;
 		}
 	
 		bool hit_shadow = false;
@@ -293,16 +284,16 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *
 	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
 }
 
-void trace(uint8_t* framebuffer, uint32_t* subtrees, float* bounds, Face* faces, Vtx* vtx, VtxExtra* vtxextra, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int nleafesmax) {
+void trace(uint8_t* framebuffer, uint32_t* subtrees, float* bounds, Face* faces, vec3* vertices, VertexData* vertexData, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int maxLeaves) {
 #ifdef __CUDACC__
 	dim3 blockd(8, 8);
 	dim3 gridd((w + blockd.x - 1) / blockd.x, (h + blockd.y - 1) / blockd.y);
-	traceKernel<<<gridd, blockd>>>(0, 0, framebuffer, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
+	traceKernel<<<gridd, blockd>>>(0, 0, framebuffer, subtrees, bounds, faces, vertices, vertexData, w, h, cam, maxLeaves);
 	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; y++) {
 		for (int x = 0; x < w; x++) {
-			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vtx, vtxextra, w, h, cam, nleafesmax);
+			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vertices, vertexData, w, h, cam, maxLeaves);
 		}
 	}
 #endif
@@ -321,7 +312,7 @@ void *my_malloc(std::size_t size, int description) {
 	return result;
 }
 
-void my_upload(void *dst, const void *src, std::size_t size) {
+void my_upload(void* dst, const void* src, std::size_t size) {
 	#ifdef __CUDACC__
 		CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice));
 	#else
@@ -329,7 +320,7 @@ void my_upload(void *dst, const void *src, std::size_t size) {
 	#endif
 }
 
-void my_download(void *dst, const void *src, std::size_t size) {
+void my_download(void* dst, const void* src, std::size_t size) {
 	#ifdef __CUDACC__
 		CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost));
 	#else
@@ -342,70 +333,71 @@ void run(Configuration& config) {
 	mesh.compute_normals();
 	std::cout << "Mesh statistics: Faces: " << mesh.faces.size() << " Vertices: " << mesh.vertices.size() << std::endl;
 
-	int nleafesmax = 32;
+	// Build BVH.
+	int maxLeaves = 32;
 	BVHBuilder bvhb;
-	{
-		std::vector<float> aabbs(mesh.faces.size() * 6);
-		std::vector<float> cens(mesh.faces.size() * 3);
-		for (uint32_t i = 0; i < mesh.faces.size(); ++i) {
-			const Face& face = mesh.faces[i];
-			const Vertex& v0 = mesh.vertices[face.idx[0]];
-			const Vertex& v1 = mesh.vertices[face.idx[1]];
-			const Vertex& v2 = mesh.vertices[face.idx[2]];
-			
-			AABB aabb;
-			aabb.feed(v0.pos);
-			aabb.feed(v1.pos);
-			aabb.feed(v2.pos);
+	std::vector<float> aabbs(mesh.faces.size() * 6);
+	std::vector<float> centers(mesh.faces.size() * 3);
+	for (uint32_t i = 0; i < mesh.faces.size(); ++i) {
+		const Face& face = mesh.faces[i];
+		const Vertex& v0 = mesh.vertices[face.idx[0]];
+		const Vertex& v1 = mesh.vertices[face.idx[1]];
+		const Vertex& v2 = mesh.vertices[face.idx[2]];
 
-			for (int j = 0; j < 3; ++j) {
-				aabbs[i * 6 + j] = aabb.min[j];
-				aabbs[i * 6 + j + 3] = aabb.max[j];
-				cens[i * 3 + j] = (v0.pos[j] + v1.pos[j] + v2.pos[j]) / 3;
-			}
+		AABB aabb;
+		aabb.feed(v0.position);
+		aabb.feed(v1.position);
+		aabb.feed(v2.position);
+
+		for (int j = 0; j < 3; ++j) {
+			aabbs[i * 6 + j] = aabb.min[j];
+			aabbs[i * 6 + j + 3] = aabb.max[j];
+			centers[i * 3 + j] = (v0.position[j] + v1.position[j] + v2.position[j]) / 3;
 		}
-
-		bvhb.construct(cens.data(), aabbs.data(), mesh.faces.size(), nleafesmax, config.heuristic);
 	}
+
+	bvhb.construct(centers.data(), aabbs.data(), mesh.faces.size(), maxLeaves, config.heuristic);
 	std::cout << "Got " << bvhb.num_nodes() << " nodes; bounds: " << bvhb.bounds.size() / 4 << std::endl;
 
-	image_b output(config.width, config.height, 3);
-	uint8_t* framebuffer = (uint8_t*) my_malloc(output.size(), 0);
-	uint32_t *d_subtrees = (uint32_t*)my_malloc(bvhb.subtrees.size() * sizeof(uint32_t), 1);
-	my_upload(d_subtrees, (const char*)bvhb.subtrees.data(), bvhb.subtrees.size() * sizeof(uint32_t));
-	std::vector<Face> trispermuted(bvhb.leaf_nodes.size());
-	float *d_bounds = (float*)my_malloc(bvhb.bounds.size() * 4 * 6, 2);
-	my_upload(d_bounds, (const char*)bvhb.bounds.data(), bvhb.bounds.size() * 4 * 6);
+	// Rearrange data for GPU.
+	std::vector<Face> bvhFaces(bvhb.leaf_nodes.size());
+	std::vector<vec3> bvhVertices(mesh.vertices.size());
+	std::vector<VertexData> bvhVertexData(mesh.vertices.size());
 
-	Face *d_tris = (Face*)my_malloc(trispermuted.size() * 4 * 3, 3);
-	Vtx *d_vtx = (Vtx*)my_malloc(mesh.vertices.size() * sizeof(Vtx), 4);
-	VtxExtra *d_vtxextra = (VtxExtra*)my_malloc(mesh.vertices.size() * sizeof(VtxExtra), 5);
-
-	std::vector<Vtx> vtx(mesh.vertices.size());
-	std::vector<VtxExtra> vtxextra(mesh.vertices.size());
-
-	std::cout << bvhb.leaf_nodes.size() << " " << mesh.faces.size() << " " << bvhb.leaf_nodes.size() * sizeof(Face) << std::endl;
-	for (int i = 0; i < bvhb.leaf_nodes.size(); ++i) {
+	for (int i = 0; i < bvhb.leaf_nodes.size(); i++) {
 		uint32_t f = bvhb.leaf_nodes[i];
-		if (f == -1u) trispermuted[i] = Face(0, 0, 0);
-		else trispermuted[i] = mesh.faces[bvhb.leaf_nodes[i]];
-// 		std::cout << trispermuted[i].idx[0] << " " << trispermuted[i].idx[1] << " " << trispermuted[i].idx[2] << std::endl;
-	}
-	for (int i = 0; i < mesh.vertices.size(); ++i) {
-		vtx[i] = Vtx(mesh.vertices[i].pos[0], mesh.vertices[i].pos[1], mesh.vertices[i].pos[2]);
-		vtxextra[i] = VtxExtra{ mesh.vertices[i].pos[3], mesh.vertices[i].pos[4], mesh.vertices[i].pos[5] };
+		if (f == -1u) bvhFaces[i] = Face(0, 0, 0);
+		else bvhFaces[i] = mesh.faces[bvhb.leaf_nodes[i]];
 	}
 
-	my_upload(d_tris, (const char*)trispermuted.data(), trispermuted.size() * 4 * 3);
-	my_upload(d_vtx, (const char*)vtx.data(), vtx.size() * sizeof(Vtx));
-	my_upload(d_vtxextra, (const char*)vtxextra.data(), vtxextra.size() * sizeof(VtxExtra));
+	for (int i = 0; i < mesh.vertices.size(); i++) {
+		bvhVertices[i] = mesh.vertices[i].position;
+		bvhVertexData[i] = VertexData{ mesh.vertices[i].normal };
+	}
+
+	image_b output(config.width, config.height, 3);
+	uint8_t* d_framebuffer = (uint8_t*) my_malloc(output.size(), 0);
+
+	uint32_t *d_subtrees = (uint32_t*) my_malloc(bvhb.subtrees.size() * sizeof(uint32_t), 1);
+	my_upload(d_subtrees, bvhb.subtrees.data(), bvhb.subtrees.size() * sizeof(uint32_t));
+
+	float* d_bounds = (float*) my_malloc(bvhb.bounds.size() * sizeof(AABB), 2);
+	my_upload(d_bounds, bvhb.bounds.data(), bvhb.bounds.size() * sizeof(AABB));
+
+	Face* d_faces = (Face*) my_malloc(bvhFaces.size() * sizeof(Face), 3);
+	my_upload(d_faces, bvhFaces.data(), bvhFaces.size() * sizeof(Face));
+
+	vec3* d_vertices = (vec3*) my_malloc(bvhVertices.size() * sizeof(vec3), 4);
+	my_upload(d_vertices, bvhVertices.data(), bvhVertices.size() * sizeof(vec3));
+
+	VertexData *d_vertexData = (VertexData*) my_malloc(bvhVertexData.size() * sizeof(VertexData), 5);
+	my_upload(d_vertexData, bvhVertexData.data(), bvhVertexData.size() * sizeof(VertexData));
 
 	std::cout << "Starting renderer" << std::endl;
-
-	trace(framebuffer, d_subtrees, d_bounds, d_tris, d_vtx, d_vtxextra, output.width(), output.height(), bvhb.maxlvl, config.camera, nleafesmax);
+	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, output.width(), output.height(), bvhb.maxlvl, config.camera, maxLeaves);
 
 	std::cout << "Download" << std::endl;
-	my_download((char*) output.data(), framebuffer, output.size());
+	my_download(output.data(), d_framebuffer, output.size());
 
 	std::cout << "Original mesh size: " << mesh.faces.size() << std::endl;
 	std::cout << "Leaf triangles: " << bvhb.leaf_nodes.size() << std::endl;

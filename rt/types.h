@@ -21,12 +21,12 @@ struct Ray {
 };
 
 struct Vertex {
-	float pos[6];
-// 	float nrm[3];
+	vec3 position;
+	vec3 normal;
 
 	Vertex() {}
-	Vertex(float x, float y, float z) : pos{ x, y, z } {}
-	Vertex(const Vertex &vtx) : pos{ vtx.pos[0], vtx.pos[1], vtx.pos[2], vtx.pos[3], vtx.pos[4], vtx.pos[5] } {}
+	Vertex(float x, float y, float z) : position{ x, y, z } {}
+	Vertex(const Vertex &vtx) : position{ vtx.position }, normal{ vtx.normal } {}
 };
 
 struct Face {
@@ -43,25 +43,27 @@ struct Mesh {
 
 	void compute_normals() {
 		for (int i = 0; i < faces.size(); ++i) {
-			float ux = get_coord(i, 1)[0] - get_coord(i, 0)[0], uy = get_coord(i, 1)[1] - get_coord(i, 0)[1], uz = get_coord(i, 1)[2] - get_coord(i, 0)[2];
-			float vx = get_coord(i, 2)[0] - get_coord(i, 0)[0], vy = get_coord(i, 2)[1] - get_coord(i, 0)[1], vz = get_coord(i, 2)[2] - get_coord(i, 0)[2];
+			Face face = faces[i];
 
-			float nx = -uy * vz + uz * vy;
-			float ny = -uz * vx + ux * vz;
-			float nz = -ux * vy + uy * vx;
-			float nl = std::sqrt(nx * nx + ny * ny + nz * nz);
-			if (nl != 0.f) { nx /= nl; ny /= nl; nz /= nl; }
+			const vec3& a = vertices[face.idx[0]].position;
+			const vec3& b = vertices[face.idx[1]].position;
+			const vec3& c = vertices[face.idx[2]].position;
 
-			for (int j = 0; j < 3; ++j) {
-				vertices[faces[i].idx[j]].pos[3] = nx;
-				vertices[faces[i].idx[j]].pos[4] = ny;
-				vertices[faces[i].idx[j]].pos[5] = nz;
-			}
+			vec3 e1 = b - a;
+			vec3 e2 = c - a;
+
+			vec3 normal = -cross(e1, e2);
+			float length = std::sqrt(dot(normal, normal));
+			if (length != 0.0f) normal = normal / length;
+
+			vertices[faces[i].idx[0]].normal = normal;
+			vertices[faces[i].idx[1]].normal = normal;
+			vertices[faces[i].idx[2]].normal = normal;
 		}
 	}
 
-	const float *get_coord(int face, int vertex) const {
-		return vertices[faces[face].idx[vertex]].pos;
+	const vec3& get_coord(int face, int vertex) const {
+		return vertices[faces[face].idx[vertex]].position;
 	}
 };
 
