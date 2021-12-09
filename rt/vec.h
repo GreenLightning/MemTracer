@@ -15,6 +15,8 @@ struct vec3 {
 	__device__ __host__ inline vec3 operator+(const vec3 &other) { return vec3(x + other.x, y + other.y, z + other.z); }
 	__device__ __host__ inline vec3 operator/(float a) { return vec3(x / a, y / a, z / a); }
 	__device__ __host__ inline vec3 operator*(float a) { return vec3(x * a, y * a, z * a); }
+	__device__ __host__ inline friend vec3 operator/(float a, const vec3& other) { return vec3(other.x / a, other.y / a, other.z / a); }
+	__device__ __host__ inline friend vec3 operator*(float a, const vec3& other) { return vec3(other.x * a, other.y * a, other.z * a); }
 	__device__ __host__ inline float operator[](int a) const { return (&x)[a]; }
 	__device__ __host__ inline float &operator[](int a) { return (&x)[a]; }
 };
