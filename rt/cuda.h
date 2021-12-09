@@ -20,4 +20,6 @@
 	#define __host__
 	#define __device__
 	#define __global__
+
+	#define __syncthreads()
 #endif

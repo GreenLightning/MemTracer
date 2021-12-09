@@ -21,23 +21,49 @@
 	#include "meminf.h"
 #endif
 
-__host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, const float *rayorg, const float *raydir, const float *v0, const float *v1, const float *v2)
-{
+template <typename T>
+__device__ void swap(T &a, T &b) {
+	T t;
+	t = a;
+	a = b;
+	b = t;
+}
+
+__device__ Ray makeViewRay(float x, float y, float w, float h, const Camera& cam) {
+	Ray ray;
+
+	// t is half of the height of the image plane at unit distance from the camera center.
+	float t = tan(cam.vertical_fov / 2.0f * M_PI / 180.0f);
+	float px = +(2.0f * (x / w) - 1.0f) * t * w / h;
+	float py = -(2.0f * (y / h) - 1.0f) * t;
+
+	ray.origin = vec3(cam.x, cam.y, cam.z);
+
+	// Compute the matrix-vector product between cam.mat and dir and store the result in ray.dir.
+	vec3 dir = vec3(px, py, -1);
+	for (int i = 0; i < 3; i++) {
+		ray.dir[i] = dot(vec3(&cam.mat[3*i]), dir);
+	}
+
+	return ray;
+}
+
+__device__ bool intersectRayTriangle(const Ray& ray, const float* v0, const float* v1, const float* v2, float& t, float& uu, float& vv) {
 	// from wikipedia moeller trumbore
 	const float EPSILON = FLT_EPSILON;
 
 	float e1x = v1[0] - v0[0], e1y = v1[1] - v0[1], e1z = v1[2] - v0[2];
 	float e2x = v2[0] - v0[0], e2y = v2[1] - v0[1], e2z = v2[2] - v0[2];
 
-	float hx = raydir[1] * e2z - raydir[2] * e2y;
-	float hy = raydir[2] * e2x - raydir[0] * e2z;
-	float hz = raydir[0] * e2y - raydir[1] * e2x;
+	float hx = ray.dir[1] * e2z - ray.dir[2] * e2y;
+	float hy = ray.dir[2] * e2x - ray.dir[0] * e2z;
+	float hz = ray.dir[0] * e2y - ray.dir[1] * e2x;
 
 	float a = e1x * hx + e1y * hy + e1z * hz;
 	if (a > -EPSILON && a < EPSILON) return false; // This ray is parallel to this triangle.
 
 	float f = 1.0 / a;
-	float sx = rayorg[0] - v0[0], sy = rayorg[1] - v0[1], sz = rayorg[2] - v0[2];
+	float sx = ray.origin[0] - v0[0], sy = ray.origin[1] - v0[1], sz = ray.origin[2] - v0[2];
 	float u = f * (sx * hx + sy * hy + sz * hz);
 	if (u < 0.0 || u > 1.0) return false;
 
@@ -45,7 +71,7 @@ __host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, co
 	float qy = sz * e1x - sx * e1z;
 	float qz = sx * e1y - sy * e1x;
 
-	float v = f * (raydir[0] * qx + raydir[1] * qy + raydir[2] * qz);
+	float v = f * (ray.dir[0] * qx + ray.dir[1] * qy + ray.dir[2] * qz);
 	if (v < 0.0 || u + v > 1.0) return false;
 	uu = u;
 	vv = v;
@@ -54,6 +80,33 @@ __host__ __device__ inline bool tri_intersect(float &t, float &uu, float &vv, co
 	t = f * (e2x * qx + e2y * qy + e2z * qz);
 	if (t > EPSILON) return true; // ray intersection
 	else return false; // This means that there is a line intersection but not a ray intersection.
+}
+
+__device__ void intersectRayAABBAxis(const Ray& ray, float aabbMin, float aabbMax, int axis, float &tmin, float &tmax) {
+	float dirInverted = 1.f / ray.dir[axis];
+	float origin = ray.origin[axis];
+	float t1 = (aabbMin - origin) * dirInverted;
+	float t2 = (aabbMax - origin) * dirInverted;
+	tmin = min(t1, t2);
+	tmax = max(t1, t2);
+}
+
+__device__ void intersectRayAABB(const Ray& ray, const float* b, float& t1l, float& t2l, float& t1r, float& t2r) {
+	float q, w, e, r;
+	t1l = FLT_MIN; t2l = FLT_MAX;
+	t1r = FLT_MIN; t2r = FLT_MAX;
+	for (int axis = 0; axis < 3; ++axis) {
+		intersectRayAABBAxis(ray, b[axis], b[axis + 3], axis, q, w); // TODO early return
+		t1l = max(t1l, q);
+		t2l = min(t2l, w);
+		if (t1l > t2l) break;
+	}
+	for (int axis = 0; axis < 3; ++axis) {
+		intersectRayAABBAxis(ray, b[axis + 6], b[axis + 9], axis, e, r);
+		t1r = max(t1r, e);
+		t2r = min(t2r, r);
+		if (t1r > t2r) break;
+	}
 }
 
 struct Vtx {
@@ -75,74 +128,11 @@ struct VtxExtra {
 	{}
 };
 
-__device__ Ray makeViewRay(float x, float y, float w, float h, const Camera& cam) {
-	Ray ray;
-
-	// t is half of the height of the image plane at unit distance from the camera center.
-	float t = tan(cam.vertical_fov / 2.0f * M_PI / 180.0f);
-	float px = +(2.0f * (x / w) - 1.0f) * t * w / h;
-	float py = -(2.0f * (y / h) - 1.0f) * t;
-
-	ray.origin = vec3(cam.x, cam.y, cam.z);
-
-	// Compute the matrix-vector product between cam.mat and dir and store the result in ray.dir.
-	vec3 dir = vec3(px, py, -1);
-	for (int i = 0; i < 3; i++) {
-		ray.dir[i] = dot(vec3(&cam.mat[3*i]), dir);
-	}
-
-	return ray;
-}
-
-template <typename T>
-__device__ void swap(T &a, T &b)
-{
-	T t;
-	t = a;
-	a = b;
-	b = t;
-}
-__device__ void intersect_bounding_planes_native(float &t1, float &t2, float min, float max, int axis, const float *rayorg, const float *raydir)
-{
-	float dirfrac = 1.f / (axis == 0 ? raydir[0] : axis == 1 ? raydir[1] : raydir[2]);
-
-	float ro = axis == 0 ? rayorg[0] : axis == 1 ? rayorg[1] : rayorg[2];
-	t1 = (min - ro) * dirfrac;
-	t2 = (max - ro) * dirfrac;
-	if (t1 > t2) {
-		swap(t1, t2);
-	}
-}
-
-struct BoundsBVH {
-	const float *bounds;
-	__device__ BoundsBVH(const float *_bounds) : bounds(_bounds)
-	{}
-	__device__ void intersect(float &t1l, float &t2l, float &t1r, float &t2r, uint32_t idx, const float *rayorg, const float *raydir) const
-	{
-		const float *b = bounds + idx * 12;
-		float q, w, e, r;
-		t1l = FLT_MIN; t2l = FLT_MAX;
-		t1r = FLT_MIN; t2r = FLT_MAX;
-		for (int axis = 0; axis < 3; ++axis) {
-			intersect_bounding_planes_native(q, w, b[axis], b[axis + 3], axis, rayorg, raydir); // TODO early return
-			t1l = max(t1l, q);
-			t2l = min(t2l, w);
-			if (t1l > t2l) break;
-		}
-		for (int axis = 0; axis < 3; ++axis) {
-			intersect_bounding_planes_native(e, r, b[axis + 6], b[axis + 9], axis, rayorg, raydir);
-			t1r = max(t1r, e);
-			t2r = min(t2r, r);
-			if (t1r > t2r) break;
-		}
-	}
-};
-
 struct HitPoint {
 	uint32_t idx;
 	float u, v;
 };
+
 struct LeavesBVH {
 	const Face *tris;
 	const Vtx *vtx;
@@ -153,7 +143,7 @@ struct LeavesBVH {
 	{
 		return li * nleafesmax;
 	}
-	__device__ bool intersect(float &t, HitPoint *hitpoint, uint32_t idx, uint32_t nchilds, const float *rayorg, const float *raydir) const
+	__device__ bool intersect(float &t, HitPoint *hitpoint, uint32_t idx, uint32_t nchilds, const Ray& ray) const
 	{
 		Face f = tris[idx];
 		Vtx a = vtx[f.idx[0]];
@@ -161,7 +151,7 @@ struct LeavesBVH {
 		Vtx c = vtx[f.idx[2]];
 
 		float u, vv;
-		if (!tri_intersect(t, u, vv, rayorg, raydir, a.v, b.v, c.v)) return false;
+		if (!intersectRayTriangle(ray, a.v, b.v, c.v, t, u, vv)) return false;
 
 		hitpoint->idx = idx;
 		hitpoint->u = u;
@@ -171,31 +161,27 @@ struct LeavesBVH {
 	}
 };
 
-
-
-struct StackEntry3 {
+struct StackEntry {
 	float t0, t1;
 	uint32_t idx, leaves;
-	__device__ StackEntry3()
+	__device__ StackEntry()
 	{}
-	__device__ StackEntry3(float _t0, float _t1, uint32_t _idx, uint32_t _leaves) : t0(_t0), t1(_t1), idx(_idx), leaves(_leaves)
+	__device__ StackEntry(float _t0, float _t1, uint32_t _idx, uint32_t _leaves) : t0(_t0), t1(_t1), idx(_idx), leaves(_leaves)
 	{}
 };
-template <typename Subtrees, typename Bounds, typename Leaves, int L>
-__device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subtrees /* subtree sizes */, const Bounds &bounds, const Leaves &leaves, const float *rayorg, const float *raydir)
+
+__device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t *subtrees, const float* bounds, const LeavesBVH &leaves, const Ray& ray)
 {
 	bool hit = false;
 	float t0 = 0, t1 = FLT_MAX;
 
-	StackEntry3 stack[128];
+	StackEntry stack[128];
 
 	uint32_t ni = 0, li = 0, top = 0;
 	while (1) {
 		uint32_t st = subtrees[ni];
 		uint32_t axis = st >> 30, left_subtree = st & 0x3fffffffu;
-#ifdef __CUDACC__
 		__syncthreads();
-#endif
 
 		if (axis == 3) {
 
@@ -205,7 +191,7 @@ __device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subt
 			for (int i = 0; i < nn; ++i) {
 				float tt = FLT_MAX;
 				HitPoint hitpoint_tmp;
-				bool bhit = leaves.intersect(tt, &hitpoint_tmp, off + i, nn, rayorg, raydir);
+				bool bhit = leaves.intersect(tt, &hitpoint_tmp, off + i, nn, ray);
 				bhit &= tt < t;
 				if (bhit) {
 					t = tt;
@@ -223,7 +209,7 @@ __device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subt
 
 			// TODO check t0 and t
 			float t0l = FLT_MAX, t1l = FLT_MIN, t0r = FLT_MAX, t1r = FLT_MIN;
-			bounds.intersect(t0l, t1l, t0r, t1r, bi, rayorg, raydir);
+			intersectRayAABB(ray, bounds + bi * 12, t0l, t1l, t0r, t1r);
 			t0l = max(t0l, t0);
 			t1l = min(t1l, t1);
 			t0r = max(t0r, t0);
@@ -237,7 +223,7 @@ __device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subt
 			} else {
 			}
 			if (!(t0r > t1r)) {
-				StackEntry3 e = StackEntry3(t0r, t1r, cr, lr);
+				StackEntry e = StackEntry(t0r, t1r, cr, lr);
 				stack[top] = e;
 				++top;
 			} else {
@@ -257,7 +243,7 @@ __device__ inline bool trace3(float &t, HitPoint *hitpoint, const Subtrees &subt
 				return hit;
 			}
 			--top;
-			StackEntry3 e = stack[top];
+			StackEntry e = stack[top];
 			ni = e.idx;
 			li = e.leaves;
 			t0 = e.t0;
@@ -296,10 +282,9 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 	float t = FLT_MAX;
 	HitPoint hitpoint;
 
-	BoundsBVH bo(bounds);
 	LeavesBVH lv(faces, vtx, nleafesmax);
 
-	bool hit = trace3<const uint32_t*, BoundsBVH, LeavesBVH, 5 * 4>(t, &hitpoint, subtrees, bo, lv, &ray.origin.x, &ray.dir.x);
+	bool hit = traverseBVH(t, &hitpoint, subtrees, bounds, lv, ray);
 
 	float res = 1;
 	if (hit) {
