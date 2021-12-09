@@ -133,52 +133,35 @@ struct HitPoint {
 	float u, v;
 };
 
-struct LeavesBVH {
-	const Face *tris;
-	const Vtx *vtx;
-	int nleafesmax;
-	__device__ LeavesBVH(const Face *_tris, const Vtx *_vtx, int nleafesmax) : tris(_tris), vtx(_vtx), nleafesmax(nleafesmax)
-	{}
-	__device__ uint32_t get_off(uint32_t li) const
-	{
-		return li * nleafesmax;
-	}
-	__device__ bool intersect(float &t, HitPoint *hitpoint, uint32_t idx, uint32_t nchilds, const Ray& ray) const
-	{
-		Face f = tris[idx];
-		Vtx a = vtx[f.idx[0]];
-		Vtx b = vtx[f.idx[1]];
-		Vtx c = vtx[f.idx[2]];
+__device__ bool intersectRayTriangle2(const Ray& ray, const Face* faces, const Vtx* vertices, uint32_t idx, float &t, HitPoint* hitpoint) {
+	Face f = faces[idx];
+	Vtx a = vertices[f.idx[0]];
+	Vtx b = vertices[f.idx[1]];
+	Vtx c = vertices[f.idx[2]];
 
-		float u, vv;
-		if (!intersectRayTriangle(ray, a.v, b.v, c.v, t, u, vv)) return false;
+	float u, v;
+	if (!intersectRayTriangle(ray, a.v, b.v, c.v, t, u, v)) return false;
 
-		hitpoint->idx = idx;
-		hitpoint->u = u;
-		hitpoint->v = vv;
+	hitpoint->idx = idx;
+	hitpoint->u = u;
+	hitpoint->v = v;
 
-		return true;
-	}
-};
+	return true;
+}
 
 struct StackEntry {
 	float t0, t1;
 	uint32_t idx, leaves;
-	__device__ StackEntry()
-	{}
-	__device__ StackEntry(float _t0, float _t1, uint32_t _idx, uint32_t _leaves) : t0(_t0), t1(_t1), idx(_idx), leaves(_leaves)
-	{}
 };
 
-__device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t *subtrees, const float* bounds, const LeavesBVH &leaves, const Ray& ray)
-{
+__device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t *subtrees, const float* bounds, const Face *faces, const Vtx *vtx, int nleafesmax, const Ray& ray) {
 	bool hit = false;
 	float t0 = 0, t1 = FLT_MAX;
 
 	StackEntry stack[128];
 
 	uint32_t ni = 0, li = 0, top = 0;
-	while (1) {
+	while (true) {
 		uint32_t st = subtrees[ni];
 		uint32_t axis = st >> 30, left_subtree = st & 0x3fffffffu;
 		__syncthreads();
@@ -187,11 +170,11 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 
 			uint32_t nn = left_subtree;
 
-			uint32_t off = leaves.get_off(li);
+			uint32_t off = li * nleafesmax;
 			for (int i = 0; i < nn; ++i) {
 				float tt = FLT_MAX;
 				HitPoint hitpoint_tmp;
-				bool bhit = leaves.intersect(tt, &hitpoint_tmp, off + i, nn, ray);
+				bool bhit = intersectRayTriangle2(ray, faces, vtx, off + i, tt, &hitpoint_tmp);
 				bhit &= tt < t;
 				if (bhit) {
 					t = tt;
@@ -223,7 +206,7 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 			} else {
 			}
 			if (!(t0r > t1r)) {
-				StackEntry e = StackEntry(t0r, t1r, cr, lr);
+				StackEntry e = StackEntry{t0r, t1r, cr, lr};
 				stack[top] = e;
 				++top;
 			} else {
@@ -250,9 +233,7 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 			t1 = e.t1;
 		} while (t0 > t);
 	}
-	return false;
 }
-
 
 __device__ void computeColor(const float *vin, const float *light, float *colout, bool hit_shadow)
 {
@@ -282,9 +263,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 	float t = FLT_MAX;
 	HitPoint hitpoint;
 
-	LeavesBVH lv(faces, vtx, nleafesmax);
-
-	bool hit = traverseBVH(t, &hitpoint, subtrees, bounds, lv, ray);
+	bool hit = traverseBVH(t, &hitpoint, subtrees, bounds, faces, vtx, nleafesmax, ray);
 
 	float res = 1;
 	if (hit) {
@@ -292,12 +271,12 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuf, const uint32_t *sub
 		float v = hitpoint.v;
 		uint32_t idx = hitpoint.idx;
 
-		Face f = lv.tris[idx];
+		Face f = faces[idx];
 
 		// load hit vertices completely
-		Vtx v0 = lv.vtx[f.idx[0]];
-		Vtx v1 = lv.vtx[f.idx[1]];
-		Vtx v2 = lv.vtx[f.idx[2]];
+		Vtx v0 = vtx[f.idx[0]];
+		Vtx v1 = vtx[f.idx[1]];
+		Vtx v2 = vtx[f.idx[2]];
 		VtxExtra v0e = ve[f.idx[0]];
 		VtxExtra v1e = ve[f.idx[1]];
 		VtxExtra v2e = ve[f.idx[2]];
