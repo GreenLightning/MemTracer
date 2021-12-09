@@ -442,6 +442,21 @@ int main(int argc, const char** argv) {
 			continue;
 		}
 
+		if (argument == "-size") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			int value = std::atoi(argv[++i]);
+			if (value == 0) {
+				std::cerr << "bad value for " << argument << std::endl;
+				return 1;
+			}
+			config.width = value;
+			config.height = value;
+			continue;
+		}
+
 		if (argument == "-width") {
 			if (i + 1 >= argc) {
 				std::cerr << "missing value for " << argument << std::endl;
