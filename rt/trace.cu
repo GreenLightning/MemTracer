@@ -221,16 +221,10 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 	}
 }
 
-__device__ vec3 computeColor(const float *vin, const float *light, bool hit_shadow) {
-	float x = vin[0], y = vin[1], z = vin[2];
-	float nx = vin[3], ny = vin[4], nz = vin[5];
-
-	float lx = light[0] - x, ly = light[1] - y, lz = light[2] - z;
-	float ll = sqrt(lx * lx + ly * ly + lz * lz);
-	if (ll != 0.f) { lx /= ll; ly /= ll; lz /= ll; }
-
-	float dot = fabs(nx * lx + ny * ly + nz * lz);
-	float v = min(max(1.f * dot, 0.f), 1.f) - (hit_shadow ? 0.5 : 0);
+__device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hit_shadow) {
+	vec3 l = (light - vertex.position).normalizedOrZero();
+	float d = max(dot(l, vertex.normal), 0.0f);
+	float v = clamp(d - (hit_shadow ? 0.5f : 0.0f), 0.0f, 1.0f);
 	return vec3(v, v, v);
 }
 
@@ -265,12 +259,10 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *
 		VertexData d1 = vertexData[f.idx[1]];
 		VertexData d2 = vertexData[f.idx[2]];
 
-		// lerp
-		float vertex[6];
-		for (int i = 0; i < 3; ++i) {
-			vertex[i] = v0[i] * w + v1[i] * u + v2[i] * v;
-			vertex[3 + i] = d0.normal[i] * w + d1.normal[i] * u + d2.normal[i] * v;
-		}
+		// Interpolate vertices.
+		Vertex vertex;
+		vertex.position = v0 * w + v1 * u + v2 * v;
+		vertex.normal = d0.normal * w + d1.normal * u + d2.normal * v;
 	
 		bool hit_shadow = false;
 		color = computeColor(vertex, light, hit_shadow);

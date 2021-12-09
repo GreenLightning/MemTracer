@@ -8,9 +8,18 @@
 struct vec3 {
 	float x, y, z;
 
-	__device__ __host__ inline vec3() {}
+	__device__ __host__ inline vec3() : x(0.0f), y(0.0f), z(0.0f) {}
 	__device__ __host__ inline vec3(float a, float b, float c) : x(a), y(b), z(c) {}
 	__device__ __host__ inline vec3(const float *a) : x(a[0]), y(a[1]), z(a[2]) {}
+
+	__device__ __host__ inline float length() const {
+		return sqrt(x * x + y * y + z * z);
+	}
+	
+	__device__ __host__ inline vec3 normalizedOrZero() const {
+		float len = length();
+		return (len != 0.0f) ? (*this / len) : vec3();
+	}
 
 	__device__ __host__ inline vec3 operator-(const vec3 &other) const { return vec3(x - other.x, y - other.y, z - other.z); }
 	__device__ __host__ inline vec3 operator+(const vec3 &other) const { return vec3(x + other.x, y + other.y, z + other.z); }

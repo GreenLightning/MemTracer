@@ -23,3 +23,8 @@
 
 	#define __syncthreads()
 #endif
+
+template <typename T>
+__host__ __device__ T clamp(T v, T a, T b) {
+	return (v < a) ? a : (v > b) ? b : v;
+}

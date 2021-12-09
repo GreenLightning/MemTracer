@@ -24,9 +24,9 @@ struct Vertex {
 	vec3 position;
 	vec3 normal;
 
-	Vertex() {}
-	Vertex(float x, float y, float z) : position{ x, y, z } {}
-	Vertex(const Vertex &vtx) : position{ vtx.position }, normal{ vtx.normal } {}
+	__device__ __host__ Vertex() {}
+	__device__ __host__ Vertex(float x, float y, float z) : position{ x, y, z } {}
+	__device__ __host__ Vertex(const Vertex &vtx) : position{ vtx.position }, normal{ vtx.normal } {}
 };
 
 struct Face {
@@ -52,9 +52,7 @@ struct Mesh {
 			vec3 e1 = b - a;
 			vec3 e2 = c - a;
 
-			vec3 normal = -cross(e1, e2);
-			float length = std::sqrt(dot(normal, normal));
-			if (length != 0.0f) normal = normal / length;
+			vec3 normal = cross(e1, e2).normalizedOrZero();
 
 			vertices[faces[i].idx[0]].normal = normal;
 			vertices[faces[i].idx[1]].normal = normal;
