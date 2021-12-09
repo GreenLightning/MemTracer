@@ -251,7 +251,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *
 
 		Face f = faces[hitpoint.idx];
 
-		// load hit vertices completely
+		// Load hit triangle completely.
 		vec3 v0 = vertices[f.idx[0]];
 		vec3 v1 = vertices[f.idx[1]];
 		vec3 v2 = vertices[f.idx[2]];
@@ -267,6 +267,7 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *
 		bool hit_shadow = false;
 		color = computeColor(vertex, light, hit_shadow);
 	} else {
+		// Compute background color gradient.
 		float tc = (y + 0.5) / h;
 		color = (1.0f - tc) * vec3(115.0f, 193.0f, 245.0f) / 255.0f + tc * vec3(75.0f, 151.0f, 201.0f) / 255.0f;
 	}
@@ -320,12 +321,23 @@ void my_download(void* dst, const void* src, std::size_t size) {
 	#endif
 }
 
+void my_synchronize() {
+	#ifdef __CUDACC__
+		CUDA_CHECK(cudaDeviceSynchronize());
+	#endif
+}
+
 void run(Configuration& config) {
+	auto t0 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Loading mesh..." << std::endl;
 	Mesh mesh = loadMesh(config.input);
 	mesh.compute_normals();
-	std::cout << "Mesh statistics: Faces: " << mesh.faces.size() << " Vertices: " << mesh.vertices.size() << std::endl;
+	std::cout << "Mesh: " << mesh.faces.size() << " faces; " << mesh.vertices.size() << " vertices" << std::endl;
 
-	// Build BVH.
+	auto t1 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Building BVH..." << std::endl;
 	int maxLeaves = 32;
 	BVHBuilder bvhb;
 	std::vector<float> aabbs(mesh.faces.size() * 6);
@@ -349,9 +361,11 @@ void run(Configuration& config) {
 	}
 
 	bvhb.construct(centers.data(), aabbs.data(), mesh.faces.size(), maxLeaves, config.heuristic);
-	std::cout << "Got " << bvhb.num_nodes() << " nodes; bounds: " << bvhb.bounds.size() / 4 << std::endl;
+	std::cout << "BVH: " << bvhb.num_nodes() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves" << std::endl;
 
-	// Rearrange data for GPU.
+	auto t2 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Rearranging data..." << std::endl;
 	std::vector<Face> bvhFaces(bvhb.leaf_nodes.size());
 	std::vector<vec3> bvhVertices(mesh.vertices.size());
 	std::vector<VertexData> bvhVertexData(mesh.vertices.size());
@@ -367,6 +381,9 @@ void run(Configuration& config) {
 		bvhVertexData[i] = VertexData{ mesh.vertices[i].normal };
 	}
 
+	auto t3 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Uploading..." << std::endl;
 	image_b output(config.width, config.height, 3);
 	uint8_t* d_framebuffer = (uint8_t*) my_malloc(output.size(), 0);
 
@@ -385,15 +402,32 @@ void run(Configuration& config) {
 	VertexData *d_vertexData = (VertexData*) my_malloc(bvhVertexData.size() * sizeof(VertexData), 5);
 	my_upload(d_vertexData, bvhVertexData.data(), bvhVertexData.size() * sizeof(VertexData));
 
-	std::cout << "Starting renderer" << std::endl;
-	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, output.width(), output.height(), bvhb.maxlvl, config.camera, maxLeaves);
+	auto t4 = std::chrono::high_resolution_clock::now();
 
-	std::cout << "Download" << std::endl;
+	std::cout << "Rendering..." << std::endl;
+	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, output.width(), output.height(), bvhb.maxlvl, config.camera, maxLeaves);
+	my_synchronize();
+
+	auto t5 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Downloading..." << std::endl;
 	my_download(output.data(), d_framebuffer, output.size());
 
-	std::cout << "Original mesh size: " << mesh.faces.size() << std::endl;
-	std::cout << "Leaf triangles: " << bvhb.leaf_nodes.size() << std::endl;
+	auto t6 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Saving..." << std::endl;
 	image_io::save(output, config.output.c_str());
+
+	auto t7 = std::chrono::high_resolution_clock::now();
+
+	printf("Mesh:      %0.9fs\n", std::chrono::duration<double>(t1 - t0).count());
+	printf("BVH:       %0.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+	printf("Rearrange: %0.9fs\n", std::chrono::duration<double>(t3 - t2).count());
+	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(t4 - t3).count());
+	printf("Render:    %0.9fs\n", std::chrono::duration<double>(t5 - t4).count());
+	printf("Download:  %0.9fs\n", std::chrono::duration<double>(t6 - t5).count());
+	printf("Save:      %0.9fs\n", std::chrono::duration<double>(t7 - t6).count());
+	fflush(stdout);
 }
 
 int main(int argc, const char** argv) {
