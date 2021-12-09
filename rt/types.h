@@ -41,28 +41,7 @@ struct Mesh {
 	std::vector<Vertex> vertices;
 	std::vector<Face> faces;
 
-	void compute_normals() {
-		for (int i = 0; i < faces.size(); ++i) {
-			Face face = faces[i];
-
-			const vec3& a = vertices[face.idx[0]].position;
-			const vec3& b = vertices[face.idx[1]].position;
-			const vec3& c = vertices[face.idx[2]].position;
-
-			vec3 e1 = b - a;
-			vec3 e2 = c - a;
-
-			vec3 normal = cross(e1, e2).normalizedOrZero();
-
-			vertices[faces[i].idx[0]].normal = normal;
-			vertices[faces[i].idx[1]].normal = normal;
-			vertices[faces[i].idx[2]].normal = normal;
-		}
-	}
-
-	const vec3& get_coord(int face, int vertex) const {
-		return vertices[faces[face].idx[vertex]].position;
-	}
+	void compute_normals();
 };
 
 Mesh loadMesh(const std::string& name);

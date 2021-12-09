@@ -21,12 +21,16 @@ struct vec3 {
 		return (len != 0.0f) ? (*this / len) : vec3();
 	}
 
+	// unary minus
+	__device__ __host__ inline friend vec3 operator-(const vec3& v) { return vec3(-v.x, -v.y, -v.z); }
+
 	__device__ __host__ inline vec3 operator-(const vec3 &other) const { return vec3(x - other.x, y - other.y, z - other.z); }
 	__device__ __host__ inline vec3 operator+(const vec3 &other) const { return vec3(x + other.x, y + other.y, z + other.z); }
+	__device__ __host__ inline void operator-=(const vec3 &other) { this->x -= other.x; this->y -= other.y; this->z -= other.z; }
+	__device__ __host__ inline void operator+=(const vec3 &other) { this->x += other.x; this->y += other.y; this->z += other.z; }
+
 	__device__ __host__ inline vec3 operator/(float a) const { return vec3(x / a, y / a, z / a); }
 	__device__ __host__ inline vec3 operator*(float a) const { return vec3(x * a, y * a, z * a); }
-
-	__device__ __host__ inline friend vec3 operator-(const vec3& v) { return vec3(-v.x, -v.y, -v.z); }
 	__device__ __host__ inline friend vec3 operator/(float a, const vec3& other) { return vec3(other.x / a, other.y / a, other.z / a); }
 	__device__ __host__ inline friend vec3 operator*(float a, const vec3& other) { return vec3(other.x * a, other.y * a, other.z * a); }
 	
