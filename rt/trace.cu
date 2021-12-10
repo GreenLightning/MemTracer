@@ -110,86 +110,110 @@ __device__ bool intersectRayTriangle(const Ray& ray, const Face* faces, const ve
 }
 
 struct StackEntry {
-	float t0, t1;
-	uint32_t idx, leaves;
+	float tmin, tmax;
+	uint32_t nodeIndex, leafIndex;
 };
 
-__device__ inline bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
+__device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
+	StackEntry stack[128];
+	uint32_t top = 0; // index of first free stack entry
+
+	StackEntry entry = {};
+	entry.tmin = 0; entry.tmax = FLT_MAX;
+	bool hit = false;
+
+	// hitpoint.t stores the t value of the closest hit so far,
+	// so we need to initialize it here.
 	hitpoint.t = FLT_MAX;
 
-	bool hit = false;
-	float t0 = 0, t1 = FLT_MAX;
-
-	StackEntry stack[128];
-
-	uint32_t ni = 0, li = 0, top = 0;
 	while (true) {
-		uint32_t st = subtrees[ni];
-		uint32_t axis = st >> 30, left_subtree = st & 0x3fffffffu;
+		uint32_t subtree = subtrees[entry.nodeIndex];
+		uint32_t axis = subtree >> 30, payload = subtree & 0x3fffffffu;
 		__syncthreads();
 
 		if (axis == 3) {
 
-			uint32_t nn = left_subtree;
+			// This node is a leaf node.
+			// Iterate over contained triangles.
+			// Payload contains the number of triangles.
 
-			uint32_t off = li * maxLeaves;
-			for (int i = 0; i < nn; ++i) {
+			uint32_t offset = entry.leafIndex * maxLeaves;
+			for (int i = 0; i < payload; i++) {
 				HitPoint currentHitpoint;
-				bool currentHit = intersectRayTriangle(ray, faces, vertices, off + i, currentHitpoint);
+				bool currentHit = intersectRayTriangle(ray, faces, vertices, offset + i, currentHitpoint);
 				if (currentHit & (currentHitpoint.t < hitpoint.t)) {
 					hitpoint = currentHitpoint;
 					hit = true;
 				}
-				t1 = min(t1, hitpoint.t);
 			}
+
 		} else {
-			uint32_t bi = ni - li;
 
-			uint32_t cl = ni + 1, cr = ni + 1 + left_subtree;
-			uint32_t ll = li, lr = li + (left_subtree + 1) / 2;
+			// This node is an inner node.
+			// Recursively traverse both children.
+			// Payload contains the offset to the right child.
 
+			uint32_t boundsIndex = entry.nodeIndex - entry.leafIndex;
 
-			// TODO check t0 and t
-			float t0l = FLT_MAX, t1l = FLT_MIN, t0r = FLT_MAX, t1r = FLT_MIN;
-			intersectRayAABB(ray, bounds[2 * bi + 0], t0l, t1l);
-			intersectRayAABB(ray, bounds[2 * bi + 1], t0r, t1r);
-			t0l = max(t0l, t0);
-			t1l = min(t1l, t1);
-			t0r = max(t0r, t0);
-			t1r = min(t1r, t1);
+			// Compute node indices of our children.
+			// The left child is our immediate neighbor.
+			// The right child is given by the offset stored in our subtree payload.
+			uint32_t leftNodeIndex = entry.nodeIndex + 1;
+			uint32_t rightNodeIndex = entry.nodeIndex + 1 + payload;
 
-			if (t0l > t1l || t0l > t0r) {
-				swap(t0l, t0r);
-				swap(t1l, t1r);
-				swap(cl, cr);
-				swap(ll, lr);
+			// Compute leaf indices for our children.
+			// Since an inner node is not a leaf, we pass the leaf index on to
+			// the left child.
+			// For the right child, we know that the whole left subtree fits
+			// exactly into the offset between ourselves and our right child.
+			// Because this is a binary tree, it must have exactly one more leaf
+			// node than inner nodes. Therefore, we can compute the number of
+			// leaf nodes to skip by dividing (offset + 1) by 2.
+			uint32_t leftLeafIndex = entry.leafIndex;
+			uint32_t rightLeafIndex = entry.leafIndex + (payload + 1) / 2;
+
+			// Compute intersections with child bounds.
+			float tminLeft, tmaxLeft, tminRight, tmaxRight;
+			intersectRayAABB(ray, bounds[2 * boundsIndex + 0], tminLeft, tmaxLeft);
+			intersectRayAABB(ray, bounds[2 * boundsIndex + 1], tminRight, tmaxRight);
+
+			// Restrict to current range of interest.
+			tminLeft = max(tminLeft, entry.tmin);
+			tmaxLeft = min(tmaxLeft, entry.tmax);
+			tminRight = max(tminRight, entry.tmin);
+			tmaxRight = min(tmaxRight, entry.tmax);
+
+			// If the left child is not hit, or the right child is hit before the left child,
+			// swap them, because we will handle the left child first.
+			if (tminLeft > tmaxLeft || tminRight < tminLeft) {
+				swap(tminLeft, tminRight);
+				swap(tmaxLeft, tmaxRight);
+				swap(leftNodeIndex, rightNodeIndex);
+				swap(leftLeafIndex, rightLeafIndex);
 			}
-			if (!(t0r > t1r)) {
-				StackEntry e = StackEntry{t0r, t1r, cr, lr};
-				stack[top] = e;
-				++top;
+
+			// If the right child is hit, push it on the stack.
+			if (!(tminRight > tmaxRight)) {
+				stack[top++] = StackEntry{tminRight, tmaxRight, rightNodeIndex, rightLeafIndex};
 			}
 
-			if (!(t0l > t1l)) {
-				t0 = t0l;
-				t1 = t1l;
-				ni = cl;
-				li = ll;
+			// If the left child is hit, continue immediately with it.
+			// Otherwise we fall through and handle the next entry from the stack.
+			if (!(tminLeft > tmaxLeft)) {
+				entry.tmin = tminLeft;
+				entry.tmax = tmaxLeft;
+				entry.nodeIndex = leftNodeIndex;
+				entry.leafIndex = leftLeafIndex;
 				continue; // don't ascent
 			}
 		}
 
 		do {
-			if (top == 0) {
-				return hit;
-			}
-			--top;
-			StackEntry e = stack[top];
-			ni = e.idx;
-			li = e.leaves;
-			t0 = e.t0;
-			t1 = e.t1;
-		} while (t0 > hitpoint.t);
+			// Return result, if stack is empty.
+			if (top == 0) return hit;
+			// Pop entries until one is in front of the best hit so far.
+			entry = stack[--top];
+		} while (entry.tmin > hitpoint.t);
 	}
 }
 
