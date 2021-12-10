@@ -1,5 +1,6 @@
 // Copyright (c) 2021, Max von Buelow, GRIS, Technical University of Darmstadt
 
+#include <cassert>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
@@ -323,17 +324,19 @@ void my_synchronize() {
 }
 
 void run(Configuration& config) {
-	auto t0 = std::chrono::high_resolution_clock::now();
+	std::chrono::high_resolution_clock::time_point ts[32];
+	int ti = 0;
+
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Loading mesh..." << std::endl;
 	Mesh mesh = loadMesh(config.input);
 	mesh.compute_normals();
 	std::cout << "Mesh: " << mesh.faces.size() << " faces; " << mesh.vertices.size() << " vertices" << std::endl;
 
-	auto t1 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
-	std::cout << "Building BVH..." << std::endl;
-	BVHBuilder bvhb(32);
+	std::cout << "Computing AABBs..." << std::endl;
 	std::vector<float> aabbs(mesh.faces.size() * 6);
 	std::vector<float> centers(mesh.faces.size() * 3);
 	for (uint32_t i = 0; i < mesh.faces.size(); ++i) {
@@ -354,10 +357,14 @@ void run(Configuration& config) {
 		}
 	}
 
+	ts[ti++] = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Building BVH..." << std::endl;
+	BVHBuilder bvhb(32);
 	bvhb.construct(centers.data(), aabbs.data(), mesh.faces.size(), config.heuristic);
 	std::cout << "BVH: " << bvhb.num_nodes() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves; " << bvhb.depth << " max depth" << std::endl;
 
-	auto t2 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rearranging data..." << std::endl;
 	std::vector<Face> bvhFaces(bvhb.leaf_nodes.size());
@@ -375,7 +382,7 @@ void run(Configuration& config) {
 		bvhVertexData[i] = VertexData{ mesh.vertices[i].normal };
 	}
 
-	auto t3 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Uploading..." << std::endl;
 	image_b output(config.width, config.height, 3);
@@ -396,18 +403,18 @@ void run(Configuration& config) {
 	VertexData *d_vertexData = (VertexData*) my_malloc(bvhVertexData.size() * sizeof(VertexData), 5);
 	my_upload(d_vertexData, bvhVertexData.data(), bvhVertexData.size() * sizeof(VertexData));
 
-	auto t4 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rendering..." << std::endl;
 	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), bvhb.maxLeaves);
 	my_synchronize();
 
-	auto t5 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Downloading..." << std::endl;
 	my_download(output.data(), d_framebuffer, output.size());
 
-	auto t6 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	if (!config.output.empty()) {
 		std::cout << "Saving..." << std::endl;
@@ -416,17 +423,22 @@ void run(Configuration& config) {
 		std::cout << "No output file specified" << std::endl;
 	}
 
-	auto t7 = std::chrono::high_resolution_clock::now();
+	ts[ti++] = std::chrono::high_resolution_clock::now();
 
-	printf("Mesh:      %0.9fs\n", std::chrono::duration<double>(t1 - t0).count());
-	printf("BVH:       %0.9fs\n", std::chrono::duration<double>(t2 - t1).count());
-	printf("Rearrange: %0.9fs\n", std::chrono::duration<double>(t3 - t2).count());
-	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(t4 - t3).count());
-	printf("Render:    %0.9fs\n", std::chrono::duration<double>(t5 - t4).count());
-	printf("Download:  %0.9fs\n", std::chrono::duration<double>(t6 - t5).count());
+	int tj = 0;
+	printf("Mesh:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("AABBs:     %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("BVH:       %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Rearrange: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Render:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Download:  %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	if (!config.output.empty()) {
-	printf("Save:      %0.9fs\n", std::chrono::duration<double>(t7 - t6).count());
-	}
+	printf("Save:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count());
+	} tj++; // for save
+
+	assert(tj == ti-1); // should have one less interval than timestamps
+	assert(ti <= sizeof(ts)/sizeof(ts[0]));
 
 	fflush(stdout);
 }
