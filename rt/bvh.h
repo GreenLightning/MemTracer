@@ -7,6 +7,7 @@
 #include <queue>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "bvh_types.h"
 
@@ -74,5 +75,5 @@ struct BVHBuilder {
 		std::copy(sat, sat + n, leaf_nodes.begin() + off);
 	}
 
-	void construct(float *cens, float *aabbs, uint32_t n, Heuristic heuristic);
+	void construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic);
 };

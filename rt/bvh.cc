@@ -28,20 +28,19 @@ struct SplitX {
 	{}
 };
 
-void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, Heuristic heuristic)
-{
+void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic) {
 	int max_axis = 3;
 	uint32_t leafminsplitcount = maxLeaves + (maxLeaves & 1) + 2;
 
-	std::vector<uint32_t> perm(n);
+	std::vector<uint32_t> perm(aabbs.size());
 	std::vector<uint32_t> tree;
-	std::iota(perm.begin(), perm.begin() + n, 0);
+	std::iota(perm.begin(), perm.begin() + perm.size(), 0);
 
 	std::deque<SplitX> S;
 	
-	bool dosplit = n > maxLeaves;
+	bool dosplit = aabbs.size() > maxLeaves;
 
-	S.emplace_back(0, n, -1u, 0, !dosplit, 0);
+	S.emplace_back(0, aabbs.size(), -1u, 0, !dosplit, 0);
 	int o, l, nidx, split_axis, parent_node;
 	int32_t level;
 
@@ -79,7 +78,7 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, Heuristic heur
 
 			uint32_t *dp = dimperms.data() + axis * l;
 			std::sort(dp, dp + l, [&](uint32_t a, uint32_t b) {
-				return cens[a * 3 + axis] < cens[b * 3 + axis];
+				return centers[a][axis] < centers[b][axis];
 			});
 
 			vec3 min_l(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()), max_l(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity());
@@ -96,13 +95,13 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, Heuristic heur
 					maxs_r[axis * NBINS + jj / binsize] = max_r;
 				}
 				if (j < l) {
-					min_l = min(min_l, vec3(aabbs + dp[j] * 6));
-					max_l = max(max_l, vec3(aabbs + dp[j] * 6 + 3));
+					min_l = min(min_l, aabbs[dp[j]].min);
+					max_l = max(max_l, aabbs[dp[j]].max);
 				}
 
 				if (jj < l) {
-					min_r = min(min_r, vec3(aabbs + dp[jj] * 6));
-					max_r = max(max_r, vec3(aabbs + dp[jj] * 6 + 3));
+					min_r = min(min_r, aabbs[dp[jj]].min);
+					max_r = max(max_r, aabbs[dp[jj]].min);
 				}
 
 				if (j % binsize == binsize - 1) {
@@ -168,12 +167,12 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, Heuristic heur
 		// calculate complete AABBs
 		AABB aabb_l, aabb_r;
 		for (int i = 0; i < nl; ++i) {
-			aabb_l.feed_min(aabbs + perm[o + i] * 6);
-			aabb_l.feed_max(aabbs + perm[o + i] * 6 + 3);
+			aabb_l.feed_min(aabbs[perm[o + i]].min);
+			aabb_l.feed_max(aabbs[perm[o + i]].max);
 		}
 		for (int i = 0; i < nr; ++i) {
-			aabb_r.feed_min(aabbs + perm[o + nl + i] * 6);
-			aabb_r.feed_max(aabbs + perm[o + nl + i] * 6 + 3);
+			aabb_r.feed_min(aabbs[perm[o + nl + i]].min);
+			aabb_r.feed_max(aabbs[perm[o + nl + i]].max);
 		}
 
 

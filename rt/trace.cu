@@ -337,8 +337,8 @@ void run(Configuration& config) {
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Computing AABBs..." << std::endl;
-	std::vector<float> aabbs(mesh.faces.size() * 6);
-	std::vector<float> centers(mesh.faces.size() * 3);
+	std::vector<AABB> aabbs(mesh.faces.size());
+	std::vector<vec3> centers(mesh.faces.size());
 	for (uint32_t i = 0; i < mesh.faces.size(); ++i) {
 		const Face& face = mesh.faces[i];
 		const Vertex& v0 = mesh.vertices[face.idx[0]];
@@ -349,19 +349,16 @@ void run(Configuration& config) {
 		aabb.feed(v0.position);
 		aabb.feed(v1.position);
 		aabb.feed(v2.position);
+		aabbs[i] = aabb;
 
-		for (int j = 0; j < 3; ++j) {
-			aabbs[i * 6 + j] = aabb.min[j];
-			aabbs[i * 6 + j + 3] = aabb.max[j];
-			centers[i * 3 + j] = (v0.position[j] + v1.position[j] + v2.position[j]) / 3;
-		}
+		centers[i] = (v0.position + v1.position + v2.position) / 3.0f;
 	}
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Building BVH..." << std::endl;
 	BVHBuilder bvhb(32);
-	bvhb.construct(centers.data(), aabbs.data(), mesh.faces.size(), config.heuristic);
+	bvhb.construct(aabbs, centers, config.heuristic);
 	std::cout << "BVH: " << bvhb.num_nodes() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves; " << bvhb.depth << " max depth" << std::endl;
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
