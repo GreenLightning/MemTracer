@@ -19,11 +19,11 @@ struct BVHBuilder {
 		Parent() : subtree(0) {}
 	};
 
-	uint32_t maxlvl;
 	std::vector<AABB> bounds;
 	std::vector<uint32_t> subtrees;
 	std::vector<Parent> parents;
 	std::vector<uint32_t> leaf_nodes;
+	uint32_t maxlvl;
 	uint32_t depth = 0;
 
 	BVHBuilder() : parents(128) {}

@@ -57,31 +57,18 @@ __device__ Ray makeViewRay(float x, float y, float w, float h, const Camera& cam
 	return ray;
 }
 
-__device__ void intersectRayAABBAxis(const Ray& ray, float aabbMin, float aabbMax, int axis, float &tmin, float &tmax) {
-	float dirInverted = 1.f / ray.dir[axis];
-	float origin = ray.origin[axis];
-	float t1 = (aabbMin - origin) * dirInverted;
-	float t2 = (aabbMax - origin) * dirInverted;
-	tmin = min(t1, t2);
-	tmax = max(t1, t2);
-}
-
-__device__ void intersectRayAABBs(const Ray& ray, const float* b, float& t1l, float& t2l, float& t1r, float& t2r) {
-	// TODO early return
-	float q, w, e, r;
-	t1l = FLT_MIN; t2l = FLT_MAX;
-	t1r = FLT_MIN; t2r = FLT_MAX;
-	for (int axis = 0; axis < 3; ++axis) {
-		intersectRayAABBAxis(ray, b[axis], b[axis + 3], axis, q, w);
-		t1l = max(t1l, q);
-		t2l = min(t2l, w);
-		if (t1l > t2l) break;
-	}
-	for (int axis = 0; axis < 3; ++axis) {
-		intersectRayAABBAxis(ray, b[axis + 6], b[axis + 9], axis, e, r);
-		t1r = max(t1r, e);
-		t2r = min(t2r, r);
-		if (t1r > t2r) break;
+__device__ void intersectRayAABB(const Ray& ray, const AABB& aabb, float& tmin, float& tmax) {
+	tmin = FLT_MIN;
+	tmax = FLT_MAX;
+	for (int axis = 0; axis < 3; axis++) {
+		float dirInverted = 1.0f / ray.dir[axis];
+		float t1 = (aabb.min[axis] - ray.origin[axis]) * dirInverted;
+		float t2 = (aabb.max[axis] - ray.origin[axis]) * dirInverted;
+		float axisMin = min(t1, t2);
+		float axisMax = max(t1, t2);
+		tmin = max(tmin, axisMin);
+		tmax = min(tmax, axisMax);
+		if (tmin > tmax) break;
 	}
 }
 
@@ -140,7 +127,7 @@ struct StackEntry {
 	uint32_t idx, leaves;
 };
 
-__device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t *subtrees, const float* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
+__device__ inline bool traverseBVH(float& t, HitPoint* hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
 	bool hit = false;
 	float t0 = 0, t1 = FLT_MAX;
 
@@ -178,7 +165,8 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 
 			// TODO check t0 and t
 			float t0l = FLT_MAX, t1l = FLT_MIN, t0r = FLT_MAX, t1r = FLT_MIN;
-			intersectRayAABBs(ray, bounds + bi * 12, t0l, t1l, t0r, t1r);
+			intersectRayAABB(ray, bounds[2 * bi + 0], t0l, t1l);
+			intersectRayAABB(ray, bounds[2 * bi + 1], t0r, t1r);
 			t0l = max(t0l, t0);
 			t1l = min(t1l, t1);
 			t0r = max(t0r, t0);
@@ -189,13 +177,11 @@ __device__ inline bool traverseBVH(float &t, HitPoint *hitpoint, const uint32_t 
 				swap(t1l, t1r);
 				swap(cl, cr);
 				swap(ll, lr);
-			} else {
 			}
 			if (!(t0r > t1r)) {
 				StackEntry e = StackEntry{t0r, t1r, cr, lr};
 				stack[top] = e;
 				++top;
-			} else {
 			}
 
 			if (!(t0l > t1l)) {
@@ -228,7 +214,7 @@ __device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hit_s
 	return vec3(v, v, v);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *subtrees, const float *bounds, const Face *faces, const vec3* vertices, const VertexData* vertexData, uint32_t w, uint32_t h, Camera cam, int maxLeaves) {
+__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int maxLeaves) {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
 	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
@@ -277,16 +263,16 @@ __global__ void traceKernel(int x, int y, uint8_t *framebuffer, const uint32_t *
 	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
 }
 
-void trace(uint8_t* framebuffer, uint32_t* subtrees, float* bounds, Face* faces, vec3* vertices, VertexData* vertexData, uint32_t w, uint32_t h, uint32_t maxlvl, Camera cam, int maxLeaves) {
+void trace(uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int maxLeaves) {
 #ifdef __CUDACC__
-	dim3 blockd(8, 8);
-	dim3 gridd((w + blockd.x - 1) / blockd.x, (h + blockd.y - 1) / blockd.y);
-	traceKernel<<<gridd, blockd>>>(0, 0, framebuffer, subtrees, bounds, faces, vertices, vertexData, w, h, cam, maxLeaves);
+	dim3 blockDim(8, 8);
+	dim3 gridDim((w + blockDim.x - 1) / blockDim.x, (h + blockDim.y - 1) / blockDim.y);
+	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxLeaves);
 	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; y++) {
 		for (int x = 0; x < w; x++) {
-			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vertices, vertexData, w, h, cam, maxLeaves);
+			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxLeaves);
 		}
 	}
 #endif
@@ -390,7 +376,7 @@ void run(Configuration& config) {
 	uint32_t *d_subtrees = (uint32_t*) my_malloc(bvhb.subtrees.size() * sizeof(uint32_t), 1);
 	my_upload(d_subtrees, bvhb.subtrees.data(), bvhb.subtrees.size() * sizeof(uint32_t));
 
-	float* d_bounds = (float*) my_malloc(bvhb.bounds.size() * sizeof(AABB), 2);
+	AABB* d_bounds = (AABB*) my_malloc(bvhb.bounds.size() * sizeof(AABB), 2);
 	my_upload(d_bounds, bvhb.bounds.data(), bvhb.bounds.size() * sizeof(AABB));
 
 	Face* d_faces = (Face*) my_malloc(bvhFaces.size() * sizeof(Face), 3);
@@ -405,7 +391,7 @@ void run(Configuration& config) {
 	auto t4 = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rendering..." << std::endl;
-	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, output.width(), output.height(), bvhb.maxlvl, config.camera, maxLeaves);
+	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), maxLeaves);
 	my_synchronize();
 
 	auto t5 = std::chrono::high_resolution_clock::now();
