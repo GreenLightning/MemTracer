@@ -20,18 +20,18 @@ struct SplitX {
 	uint32_t node;
 	uint32_t split_axis;
 	bool leaf;
-	uint32_t level;
+	int32_t level;
 	SplitDescent desc;
 	SplitX()
 	{}
-	SplitX(uint32_t o, uint32_t l, uint32_t node, uint32_t split_axis, bool leaf, uint32_t level = 0, SplitDescent desc = NODE_LEFT) : o(o), l(l), node(node), split_axis(split_axis), leaf(leaf), level(level), desc(desc)
+	SplitX(uint32_t o, uint32_t l, uint32_t node, uint32_t split_axis, bool leaf, int32_t level = 0, SplitDescent desc = NODE_LEFT) : o(o), l(l), node(node), split_axis(split_axis), leaf(leaf), level(level), desc(desc)
 	{}
 };
 
-void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf, Heuristic heuristic)
+void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, Heuristic heuristic)
 {
 	int max_axis = 3;
-	uint32_t leafminsplitcount = nleaf + (nleaf & 1) + 2;
+	uint32_t leafminsplitcount = maxLeaves + (maxLeaves & 1) + 2;
 
 	std::vector<uint32_t> perm(n);
 	std::vector<uint32_t> tree;
@@ -39,19 +39,18 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf
 
 	std::deque<SplitX> S;
 	
-	bool dosplit = n > nleaf;
+	bool dosplit = n > maxLeaves;
 
 	S.emplace_back(0, n, -1u, 0, !dosplit, 0);
-	int o, l, nidx, split_axis, level, parent_node;
+	int o, l, nidx, split_axis, parent_node;
+	int32_t level;
 
 	double total = 0.;
 	uint32_t finalized = 0;
-	int maxlevel = 0;
 	int RR = 0;
 	while (!S.empty()) {
 		SplitX s = S.back(); S.pop_back();
 		o = s.o; l = s.l; parent_node = s.node; split_axis = s.split_axis; level = s.level;
-		maxlevel = std::max(maxlevel, level);
 		uint32_t cur_node = this->emit_node(level, parent_node, s.desc);
 // 		std::cout << "len: " << l << std::endl;
 // 		std::cout << "\rCur len: " << l << "                         ";
@@ -63,7 +62,7 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf
 		// min
 // 		std::cout << "SPLIT AXIS: " << split_axis << std::endl;
 		if (s.leaf) {
-			this->set_leaf(cur_node, perm.data() + o, l, nleaf);
+			this->set_leaf(cur_node, perm.data() + o, l, maxLeaves);
 			continue;
 		}
 
@@ -184,11 +183,10 @@ void BVHBuilder::construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf
 		this->set_axis(cur_node, best_axis);
 		this->set_bounds(cur_node, aabb_l, aabb_r);
 
-		bool r = nr > nleaf;
-		bool l = nl > nleaf;
+		bool r = nr > maxLeaves;
+		bool l = nl > maxLeaves;
 
 		S.emplace_back(o + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT);
 		S.emplace_back(o, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT);
 	}
-	this->maxlvl = maxlevel;
 }

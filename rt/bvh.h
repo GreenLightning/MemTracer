@@ -19,17 +19,18 @@ struct BVHBuilder {
 		Parent() : subtree(0) {}
 	};
 
+	const int32_t maxLeaves;
+	int32_t depth = 0;
+
 	std::vector<AABB> bounds;
 	std::vector<uint32_t> subtrees;
-	std::vector<Parent> parents;
 	std::vector<uint32_t> leaf_nodes;
-	uint32_t maxlvl;
-	uint32_t depth = 0;
+	std::vector<Parent> parents;
 
-	BVHBuilder() : parents(128) {}
+	BVHBuilder(int32_t maxLeaves) : maxLeaves(maxLeaves), parents(128) {}
 
-	uint32_t emit_node(uint32_t level = 0, uint32_t parent = -1u, SplitDescent desc = NODE_LEFT) {
-		depth = std::max(level, depth);
+	uint32_t emit_node(int32_t level = 0, uint32_t parent = -1u, SplitDescent desc = NODE_LEFT) {
+		depth = max(level, depth);
 		subtrees.emplace_back(0);
 		uint32_t s = parents.size();
 		while (level >= s) s <<= 1;
@@ -73,5 +74,5 @@ struct BVHBuilder {
 		std::copy(sat, sat + n, leaf_nodes.begin() + off);
 	}
 
-	void construct(float *cens, float *aabbs, uint32_t n, uint32_t nleaf, Heuristic heuristic);
+	void construct(float *cens, float *aabbs, uint32_t n, Heuristic heuristic);
 };
