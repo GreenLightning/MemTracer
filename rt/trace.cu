@@ -26,8 +26,9 @@ struct VertexData {
 };
 
 struct HitPoint {
-	uint32_t idx;
+	float t;
 	float u, v;
+	uint32_t idx;
 };
 
 template <typename T>
@@ -72,53 +73,39 @@ __device__ void intersectRayAABB(const Ray& ray, const AABB& aabb, float& tmin, 
 	}
 }
 
-__device__ bool intersectRayTriangle(const Ray& ray, const vec3& v0, const vec3& v1, const vec3& v2, float& t, float& uu, float& vv) {
-	// from wikipedia moeller trumbore
+__device__ bool intersectRayTriangle(const Ray& ray, const Face* faces, const vec3* vertices, uint32_t idx, HitPoint& hitpoint) {
+	Face face = faces[idx];
+	vec3 v0 = vertices[face.idx[0]];
+	vec3 v1 = vertices[face.idx[1]];
+	vec3 v2 = vertices[face.idx[2]];
+
+	// From Wikipedia: Möller-Trumbore intersection algorithm
 	const float EPSILON = FLT_EPSILON;
 
-	float e1x = v1[0] - v0[0], e1y = v1[1] - v0[1], e1z = v1[2] - v0[2];
-	float e2x = v2[0] - v0[0], e2y = v2[1] - v0[1], e2z = v2[2] - v0[2];
+	vec3 e1 = v1 - v0;
+	vec3 e2 = v2 - v0;
 
-	float hx = ray.dir[1] * e2z - ray.dir[2] * e2y;
-	float hy = ray.dir[2] * e2x - ray.dir[0] * e2z;
-	float hz = ray.dir[0] * e2y - ray.dir[1] * e2x;
+	vec3 h = cross(ray.dir, e2);
+	float a = dot(e1, h);
+	if (a > -EPSILON && a < EPSILON) return false; // The ray is parallel to the triangle.
 
-	float a = e1x * hx + e1y * hy + e1z * hz;
-	if (a > -EPSILON && a < EPSILON) return false; // This ray is parallel to this triangle.
+	float f = 1.0f / a;
+	vec3 s = ray.origin - v0;
+	float u = f * dot(s, h);
+	if (u < 0.0 || u > 1.0) return false; // The ray intersects the plane outside of the triangle.
 
-	float f = 1.0 / a;
-	float sx = ray.origin[0] - v0[0], sy = ray.origin[1] - v0[1], sz = ray.origin[2] - v0[2];
-	float u = f * (sx * hx + sy * hy + sz * hz);
-	if (u < 0.0 || u > 1.0) return false;
+	vec3 q = cross(s, e1);
+	float v = f * dot(ray.dir, q);
+	if (v < 0.0 || u + v > 1.0) return false; // The ray intersects the plane outside of the triangle.
 
-	float qx = sy * e1z - sz * e1y;
-	float qy = sz * e1x - sx * e1z;
-	float qz = sx * e1y - sy * e1x;
+	// At this stage we can compute t to find out where the intersection point is on the ray.
+	float t = f * dot(e2, q);
+	if (t < EPSILON) return false; // The intersection is on the wrong side of the ray origin.
 
-	float v = f * (ray.dir[0] * qx + ray.dir[1] * qy + ray.dir[2] * qz);
-	if (v < 0.0 || u + v > 1.0) return false;
-	uu = u;
-	vv = v;
-
-	// At this stage we can compute t to find out where the intersection point is on the line.
-	t = f * (e2x * qx + e2y * qy + e2z * qz);
-	if (t > EPSILON) return true; // ray intersection
-	else return false; // This means that there is a line intersection but not a ray intersection.
-}
-
-__device__ bool intersectRayTriangle2(const Ray& ray, const Face* faces, const vec3* vertices, uint32_t idx, float &t, HitPoint* hitpoint) {
-	Face f = faces[idx];
-	vec3 a = vertices[f.idx[0]];
-	vec3 b = vertices[f.idx[1]];
-	vec3 c = vertices[f.idx[2]];
-
-	float u, v;
-	if (!intersectRayTriangle(ray, a, b, c, t, u, v)) return false;
-
-	hitpoint->idx = idx;
-	hitpoint->u = u;
-	hitpoint->v = v;
-
+	hitpoint.t = t;
+	hitpoint.u = u;
+	hitpoint.v = v;
+	hitpoint.idx = idx;
 	return true;
 }
 
@@ -127,7 +114,9 @@ struct StackEntry {
 	uint32_t idx, leaves;
 };
 
-__device__ inline bool traverseBVH(float& t, HitPoint* hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
+__device__ inline bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int maxLeaves, const Ray& ray) {
+	hitpoint.t = FLT_MAX;
+
 	bool hit = false;
 	float t0 = 0, t1 = FLT_MAX;
 
@@ -145,16 +134,13 @@ __device__ inline bool traverseBVH(float& t, HitPoint* hitpoint, const uint32_t*
 
 			uint32_t off = li * maxLeaves;
 			for (int i = 0; i < nn; ++i) {
-				float tt = FLT_MAX;
-				HitPoint hitpoint_tmp;
-				bool bhit = intersectRayTriangle2(ray, faces, vertices, off + i, tt, &hitpoint_tmp);
-				bhit &= tt < t;
-				if (bhit) {
-					t = tt;
-					*hitpoint = hitpoint_tmp;
+				HitPoint currentHitpoint;
+				bool currentHit = intersectRayTriangle(ray, faces, vertices, off + i, currentHitpoint);
+				if (currentHit & (currentHitpoint.t < hitpoint.t)) {
+					hitpoint = currentHitpoint;
 					hit = true;
 				}
-				t1 = min(t1, t);
+				t1 = min(t1, hitpoint.t);
 			}
 		} else {
 			uint32_t bi = ni - li;
@@ -203,7 +189,7 @@ __device__ inline bool traverseBVH(float& t, HitPoint* hitpoint, const uint32_t*
 			li = e.leaves;
 			t0 = e.t0;
 			t1 = e.t1;
-		} while (t0 > t);
+		} while (t0 > hitpoint.t);
 	}
 }
 
@@ -225,9 +211,8 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* 
 
 	Ray ray = makeViewRay(x + 0.5f, y + 0.5f, w, h, cam);
 
-	float t = FLT_MAX;
 	HitPoint hitpoint;
-	bool hit = traverseBVH(t, &hitpoint, subtrees, bounds, faces, vertices, maxLeaves, ray);
+	bool hit = traverseBVH(hitpoint, subtrees, bounds, faces, vertices, maxLeaves, ray);
 
 	vec3 color;
 	if (hit) {
