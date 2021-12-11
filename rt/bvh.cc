@@ -15,7 +15,6 @@
 struct Split {
 	uint32_t offset, count;
 	uint32_t node;
-	uint32_t split_axis;
 	bool leaf;
 	int32_t level;
 	SplitDescent desc;
@@ -31,15 +30,11 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 	std::vector<Split> splitStack;
 	
 	bool dosplit = aabbs.size() > maxPrimitives;
-
-	splitStack.push_back(Split{ 0, aabbs.size(), -1u, 0, !dosplit, 0, NODE_LEFT });
-	int  nidx, split_axis, parent_node;
-	int32_t level;
+	splitStack.push_back(Split{ 0, aabbs.size(), -1u, !dosplit, 0, NODE_LEFT });
 
 	while (!splitStack.empty()) {
 		Split s = splitStack.back(); splitStack.pop_back();
-		parent_node = s.node; split_axis = s.split_axis; level = s.level;
-		uint32_t cur_node = this->emit_node(level, parent_node, s.desc);
+		uint32_t cur_node = this->emit_node(s.level, s.node, s.desc);
 
 		// get bounding triangles and swap them to the first two positions of perm
 		float val = std::numeric_limits<float>::infinity();
@@ -127,7 +122,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		int best_axis = best_idx / NBINS;
 
 		if (heuristic == MEDIAN) {
-			best_axis = max_d_axis/*(split_axis + 1) % 3*/;
+			best_axis = max_d_axis;
 			best_split = s.count / 2;
 		}
 
@@ -157,7 +152,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		bool r = nr > maxPrimitives;
 		bool l = nl > maxPrimitives;
 
-		splitStack.push_back(Split{ s.offset + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT });
-		splitStack.push_back(Split{ s.offset, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT });
+		splitStack.push_back(Split{ s.offset + nl, nr, cur_node, !r, s.level + 1, NODE_RIGHT });
+		splitStack.push_back(Split{ s.offset, nl, cur_node, !l, s.level + 1, NODE_LEFT });
 	}
 }
