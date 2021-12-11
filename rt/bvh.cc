@@ -3,10 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <numeric>
-#include <queue>
 #include <random>
-#include <stack>
-#include <unordered_set>
 #include <vector>
 
 #include "vec.h"
@@ -15,51 +12,47 @@
 
 #define NBINS 256
 
-struct SplitX {
+struct Split {
 	uint32_t o, l;
 	uint32_t node;
 	uint32_t split_axis;
 	bool leaf;
 	int32_t level;
 	SplitDescent desc;
-	SplitX()
+	Split()
 	{}
-	SplitX(uint32_t o, uint32_t l, uint32_t node, uint32_t split_axis, bool leaf, int32_t level = 0, SplitDescent desc = NODE_LEFT) : o(o), l(l), node(node), split_axis(split_axis), leaf(leaf), level(level), desc(desc)
+	Split(uint32_t o, uint32_t l, uint32_t node, uint32_t split_axis, bool leaf, int32_t level = 0, SplitDescent desc = NODE_LEFT) : o(o), l(l), node(node), split_axis(split_axis), leaf(leaf), level(level), desc(desc)
 	{}
 };
 
 void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic) {
-	int max_axis = 3;
-	uint32_t leafminsplitcount = maxPrimitives + (maxPrimitives & 1) + 2;
+	// Used for the cost calculation.
+	const uint32_t minSplitCount = maxPrimitives + (maxPrimitives & 1) + 2;
 
 	std::vector<uint32_t> perm(aabbs.size());
 	std::vector<uint32_t> tree;
 	std::iota(perm.begin(), perm.begin() + perm.size(), 0);
 
-	std::deque<SplitX> S;
+	std::vector<Split> splitStack;
 	
 	bool dosplit = aabbs.size() > maxPrimitives;
 
-	S.emplace_back(0, aabbs.size(), -1u, 0, !dosplit, 0);
+	splitStack.emplace_back(0, aabbs.size(), -1u, 0, !dosplit, 0);
 	int o, l, nidx, split_axis, parent_node;
 	int32_t level;
 
 	double total = 0.;
 	uint32_t finalized = 0;
 	int RR = 0;
-	while (!S.empty()) {
-		SplitX s = S.back(); S.pop_back();
+	while (!splitStack.empty()) {
+		Split s = splitStack.back(); splitStack.pop_back();
 		o = s.o; l = s.l; parent_node = s.node; split_axis = s.split_axis; level = s.level;
 		uint32_t cur_node = this->emit_node(level, parent_node, s.desc);
-// 		std::cout << "len: " << l << std::endl;
-// 		std::cout << "\rCur len: " << l << "                         ";
-		std::cout.flush();
 
-// 		// get bounding triangles and swap them to the first two positions of perm
+		// get bounding triangles and swap them to the first two positions of perm
 		float val = std::numeric_limits<float>::infinity();
 		uint32_t idx;
-		// min
-// 		std::cout << "SPLIT AXIS: " << split_axis << std::endl;
+
 		if (s.leaf) {
 			this->set_leaf(cur_node, perm.data() + o, l, maxPrimitives);
 			continue;
@@ -71,7 +64,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		float costs[NBINS * 3];
 		vec3 mins_l[NBINS * 3], maxs_l[NBINS * 3], mins_r[NBINS * 3], maxs_r[NBINS * 3];
 		float max_d = 0, max_d_axis;
-		for (int axis = 0; axis < max_axis; ++axis) {
+		for (int axis = 0; axis < 3; ++axis) {
 			for (int i = 0; i < l; ++i) {
 				dimperms[i + axis * l] = perm[o + i];
 			}
@@ -135,7 +128,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 				uint32_t num_l = (k + 1) * binsize;
 				uint32_t num_r = l - num_l;
 				costs[axis * NBINS + k] = lhs * num_l + rhs * num_r;
-				costs[axis * NBINS + k] += (1 - std::min(num_l, leafminsplitcount) / (float)leafminsplitcount) + (1 - std::min(num_r, leafminsplitcount) / (float)leafminsplitcount);
+				costs[axis * NBINS + k] += (1 - std::min(num_l, minSplitCount) / (float)minSplitCount) + (1 - std::min(num_r, minSplitCount) / (float)minSplitCount);
 			}
 		}
 
@@ -185,7 +178,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		bool r = nr > maxPrimitives;
 		bool l = nl > maxPrimitives;
 
-		S.emplace_back(o + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT);
-		S.emplace_back(o, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT);
+		splitStack.emplace_back(o + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT);
+		splitStack.emplace_back(o, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT);
 	}
 }
