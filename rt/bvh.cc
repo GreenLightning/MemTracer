@@ -39,13 +39,17 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		// uint32_t currentNode = this->emit_node(s.level, s.parent, s.desc);
 		depth = max(s.level, depth);
 		subtrees.emplace_back(0);
-		uint32_t currentNode = num_nodes() - 1;
+		uint32_t currentNode = subtrees.size() - 1;
 		if (s.desc == NODE_RIGHT) {
 			subtrees[s.parent] = currentNode - s.parent - 1;
 		}
 
 		if (s.count <= maxPrimitives) {
-			this->set_leaf(currentNode, perm.data() + s.offset, s.count, maxPrimitives);
+			subtrees[currentNode] = (3 << 30) | s.count;
+
+			auto offset = leaf_nodes.size();
+			leaf_nodes.resize(offset + maxPrimitives, -1u);
+			std::copy(perm.begin() + s.offset, perm.begin() + s.offset + s.count, leaf_nodes.begin() + offset);
 			continue;
 		}
 
@@ -147,7 +151,6 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 			aabbRight.feed(aabbs[perm[s.offset + countLeft + i]]);
 		}
 
-		this->set_axis(currentNode, bestAxis);
 		bounds.push_back(aabbLeft);
 		bounds.push_back(aabbRight);
 

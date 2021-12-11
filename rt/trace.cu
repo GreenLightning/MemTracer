@@ -363,7 +363,7 @@ void run(Configuration& config) {
 	std::cout << "Building BVH..." << std::endl;
 	BVHBuilder bvhb(32);
 	bvhb.construct(aabbs, centers, config.heuristic);
-	std::cout << "BVH: " << bvhb.num_nodes() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves; " << bvhb.depth << " max depth" << std::endl;
+	std::cout << "BVH: " << bvhb.subtrees.size() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves; " << bvhb.depth << " max depth" << std::endl;
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
