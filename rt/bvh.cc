@@ -10,6 +10,15 @@
 
 #include "bvh.h"
 
+bool validateHeuristic(const std::string& value) {
+	return (value == "sah") || (value == "median");
+}
+
+Heuristic parseHeuristic(const std::string& value) {
+	// NOTE: SAH is default value (for empty string).
+	return (value == "median") ? MEDIAN : SAH;
+}
+
 enum SplitDescent { NODE_LEFT, NODE_RIGHT };
 
 struct Split {

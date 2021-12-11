@@ -16,20 +16,25 @@
 #include "check.h"
 #include "bvh.h"
 #include "config.h"
-#include "types.h"
+#include "mesh.h"
 
 #ifdef MEMINF_ENABLED
 	#include "meminf.h"
 #endif
 
-struct VertexData {
-	vec3 normal;
+struct Ray {
+	vec3 origin;
+	vec3 dir;
 };
 
 struct HitPoint {
 	float t;
 	float u, v;
 	uint32_t idx;
+};
+
+struct VertexData {
+	vec3 normal;
 };
 
 template <typename T>
@@ -362,7 +367,8 @@ void run(Configuration& config) {
 
 	std::cout << "Building BVH..." << std::endl;
 	BVHBuilder bvhb(32);
-	bvhb.construct(aabbs, centers, config.heuristic);
+	Heuristic heuristic = parseHeuristic(config.heuristic);
+	bvhb.construct(aabbs, centers, heuristic);
 	std::cout << "BVH: " << bvhb.subtrees.size() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves; " << bvhb.depth << " max depth" << std::endl;
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
@@ -531,10 +537,8 @@ int main(int argc, const char** argv) {
 				return 1;
 			}
 			std::string value = argv[++i];
-			if (value == "sah") {
-				config.heuristic = SAH;
-			} else if (value == "median") {
-				config.heuristic = MEDIAN;
+			if (validateHeuristic(value)) {
+				config.heuristic = value;
 			} else {
 				std::cerr << "warning: ignoring unknown value for " << argument << ": " << value << std::endl;
 			}

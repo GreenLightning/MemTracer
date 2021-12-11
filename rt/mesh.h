@@ -9,17 +9,6 @@
 #include "vec.h"
 #include "cuda.h"
 
-struct Camera {
-	float x = 0, y = 0, z = 0;
-	float mat[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-	float vertical_fov = 60;
-};
-
-struct Ray {
-	vec3 origin;
-	vec3 dir;
-};
-
 struct Vertex {
 	vec3 position;
 	vec3 normal;

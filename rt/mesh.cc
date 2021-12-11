@@ -4,7 +4,7 @@
 
 #include <happly.h>
 
-#include "types.h"
+#include "mesh.h"
 
 void Mesh::compute_normals() {
 	for (int i = 0; i < vertices.size(); i++) {

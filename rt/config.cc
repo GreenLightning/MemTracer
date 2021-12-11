@@ -41,13 +41,10 @@ void loadConfiguration(Configuration& config, const std::string& path) {
 	if (data.contains("heuristic")) {
 		auto heuristic = toml::find(data, "heuristic");
 		std::string value = heuristic.as_string();
-		if (value == "sah") {
-			config.heuristic = SAH;
-		} else if (value == "median") {
-			config.heuristic = MEDIAN;
-		} else {
+		if (!validateHeuristic(value)) {
 			throw std::runtime_error(toml::format_error("[error] unknown value for heuristic", heuristic, "here"));
 		}
+		config.heuristic = value;
 	}
 
 	if (data.contains("camera")) {
