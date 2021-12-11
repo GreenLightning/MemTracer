@@ -94,7 +94,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 
 				if (jj < l) {
 					min_r = min(min_r, aabbs[dp[jj]].min);
-					max_r = max(max_r, aabbs[dp[jj]].min);
+					max_r = max(max_r, aabbs[dp[jj]].max);
 				}
 
 				if (j % binsize == binsize - 1) {
