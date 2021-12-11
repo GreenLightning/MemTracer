@@ -120,7 +120,7 @@ struct StackEntry {
 	uint32_t nodeIndex, leafIndex;
 };
 
-__device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int32_t maxPrimitives, const Ray& ray) {
+__device__ bool traverseBVH(HitPoint& hitpoint, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, uint32_t maxPrimitives, const Ray& ray) {
 	StackEntry stack[128];
 	uint32_t top = 0; // index of first free stack entry
 
@@ -133,8 +133,8 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const 
 	hitpoint.t = FLT_MAX;
 
 	while (true) {
-		uint32_t subtree = subtrees[entry.nodeIndex];
-		uint32_t axis = subtree >> 30, payload = subtree & 0x3fffffffu;
+		BVH::Node node = nodes[entry.nodeIndex];
+		uint32_t axis = node >> 30, payload = node & 0x3fffffffu;
 		__syncthreads();
 
 		if (axis == 3) {
@@ -143,7 +143,7 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const 
 			// Iterate over contained triangles.
 			// Payload contains the number of triangles.
 
-			uint32_t offset = entry.leafIndex * uint32_t(maxPrimitives);
+			uint32_t offset = entry.leafIndex * maxPrimitives;
 			for (int i = 0; i < payload; i++) {
 				HitPoint currentHitpoint;
 				bool currentHit = intersectRayTriangle(ray, faces, vertices, offset + i, currentHitpoint);
@@ -161,7 +161,7 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const 
 
 			// Compute node indices of our children.
 			// The left child is our immediate neighbor.
-			// The right child is given by the offset stored in our subtree payload.
+			// The right child is given by the offset stored in our node payload.
 			uint32_t leftNodeIndex = entry.nodeIndex + 1;
 			uint32_t rightNodeIndex = entry.nodeIndex + 1 + payload;
 
@@ -234,7 +234,7 @@ __device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hit_s
 	return vec3(v, v, v);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int32_t maxPrimitives) {
+__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
 	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
@@ -246,7 +246,7 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* 
 	Ray ray = makeViewRay(x + 0.5f, y + 0.5f, w, h, cam);
 
 	HitPoint hitpoint;
-	bool hit = traverseBVH(hitpoint, subtrees, bounds, faces, vertices, maxPrimitives, ray);
+	bool hit = traverseBVH(hitpoint, nodes, bounds, faces, vertices, maxPrimitives, ray);
 
 	vec3 color;
 	if (hit) {
@@ -282,16 +282,16 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* 
 	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
 }
 
-void trace(uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int32_t maxPrimitives) {
+void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
 #ifdef __CUDACC__
 	dim3 blockDim(8, 8);
 	dim3 gridDim((w + blockDim.x - 1) / blockDim.x, (h + blockDim.y - 1) / blockDim.y);
-	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
+	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
 	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; y++) {
 		for (int x = 0; x < w; x++) {
-			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
+			traceKernel(x, y, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
 		}
 	}
 #endif
@@ -366,22 +366,21 @@ void run(Configuration& config) {
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Building BVH..." << std::endl;
-	BVHBuilder bvhb(32);
 	Heuristic heuristic = parseHeuristic(config.heuristic);
-	bvhb.construct(aabbs, centers, heuristic);
-	std::cout << "BVH: " << bvhb.subtrees.size() << " nodes; " << bvhb.bounds.size() << " aabbs; " << bvhb.leaf_nodes.size() << " leaves; " << bvhb.depth << " max depth" << std::endl;
+	BVH bvh = constructBVH(aabbs, centers, 32, heuristic);
+	std::cout << "BVH: " << bvh.nodes.size() << " nodes; " << bvh.bounds.size() << " aabbs; " << bvh.primitives.size() << " leaves; " << bvh.depth << " max depth" << std::endl;
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rearranging data..." << std::endl;
-	std::vector<Face> bvhFaces(bvhb.leaf_nodes.size());
+	std::vector<Face> bvhFaces(bvh.primitives.size());
 	std::vector<vec3> bvhVertices(mesh.vertices.size());
 	std::vector<VertexData> bvhVertexData(mesh.vertices.size());
 
-	for (int i = 0; i < bvhb.leaf_nodes.size(); i++) {
-		uint32_t f = bvhb.leaf_nodes[i];
+	for (int i = 0; i < bvh.primitives.size(); i++) {
+		uint32_t f = bvh.primitives[i];
 		if (f == -1u) bvhFaces[i] = Face(0, 0, 0);
-		else bvhFaces[i] = mesh.faces[bvhb.leaf_nodes[i]];
+		else bvhFaces[i] = mesh.faces[bvh.primitives[i]];
 	}
 
 	for (int i = 0; i < mesh.vertices.size(); i++) {
@@ -395,11 +394,11 @@ void run(Configuration& config) {
 	image_b output(config.width, config.height, 3);
 	uint8_t* d_framebuffer = (uint8_t*) my_malloc(output.size(), 0);
 
-	uint32_t *d_subtrees = (uint32_t*) my_malloc(bvhb.subtrees.size() * sizeof(uint32_t), 1);
-	my_upload(d_subtrees, bvhb.subtrees.data(), bvhb.subtrees.size() * sizeof(uint32_t));
+	BVH::Node *d_nodes = (BVH::Node*) my_malloc(bvh.nodes.size() * sizeof(BVH::Node), 1);
+	my_upload(d_nodes, bvh.nodes.data(), bvh.nodes.size() * sizeof(BVH::Node));
 
-	AABB* d_bounds = (AABB*) my_malloc(bvhb.bounds.size() * sizeof(AABB), 2);
-	my_upload(d_bounds, bvhb.bounds.data(), bvhb.bounds.size() * sizeof(AABB));
+	AABB* d_bounds = (AABB*) my_malloc(bvh.bounds.size() * sizeof(AABB), 2);
+	my_upload(d_bounds, bvh.bounds.data(), bvh.bounds.size() * sizeof(AABB));
 
 	Face* d_faces = (Face*) my_malloc(bvhFaces.size() * sizeof(Face), 3);
 	my_upload(d_faces, bvhFaces.data(), bvhFaces.size() * sizeof(Face));
@@ -413,7 +412,7 @@ void run(Configuration& config) {
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rendering..." << std::endl;
-	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), bvhb.maxPrimitives);
+	trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), bvh.maxPrimitives);
 	my_synchronize();
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();

@@ -24,11 +24,13 @@ enum SplitDescent { NODE_LEFT, NODE_RIGHT };
 struct Split {
 	uint32_t offset, count;
 	uint32_t parent;
-	int32_t level;
+	uint32_t level;
 	SplitDescent desc;
 };
 
-void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic) {
+BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, uint32_t maxPrimitives, Heuristic heuristic) {
+	BVH bvh = BVH(maxPrimitives);
+
 	constexpr uint32_t numBins = 256;
 
 	const uint32_t minSplitCount = maxPrimitives + (maxPrimitives & 1) + 2; // used for the cost calculation
@@ -46,19 +48,19 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		
 
 		// uint32_t currentNode = this->emit_node(s.level, s.parent, s.desc);
-		depth = max(s.level, depth);
-		subtrees.emplace_back(0);
-		uint32_t currentNode = subtrees.size() - 1;
+		bvh.depth = max(s.level, bvh.depth);
+		bvh.nodes.emplace_back(0);
+		uint32_t currentNode = bvh.nodes.size() - 1;
 		if (s.desc == NODE_RIGHT) {
-			subtrees[s.parent] = currentNode - s.parent - 1;
+			bvh.nodes[s.parent] = currentNode - s.parent - 1;
 		}
 
 		if (s.count <= maxPrimitives) {
-			subtrees[currentNode] = (3 << 30) | s.count;
+			bvh.nodes[currentNode] = (3 << 30) | s.count;
 
-			auto offset = leaf_nodes.size();
-			leaf_nodes.resize(offset + maxPrimitives, -1u);
-			std::copy(perm.begin() + s.offset, perm.begin() + s.offset + s.count, leaf_nodes.begin() + offset);
+			auto offset = bvh.primitives.size();
+			bvh.primitives.resize(offset + maxPrimitives, -1u);
+			std::copy(perm.begin() + s.offset, perm.begin() + s.offset + s.count, bvh.primitives.begin() + offset);
 			continue;
 		}
 
@@ -160,11 +162,13 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 			aabbRight.feed(aabbs[perm[s.offset + countLeft + i]]);
 		}
 
-		bounds.push_back(aabbLeft);
-		bounds.push_back(aabbRight);
+		bvh.bounds.push_back(aabbLeft);
+		bvh.bounds.push_back(aabbRight);
 
 		// We have to handle the left node next, so we push it last on the stack.
 		splitStack.push_back(Split{ s.offset + countLeft, countRight, currentNode, s.level + 1, NODE_RIGHT });
 		splitStack.push_back(Split{ s.offset, countLeft, currentNode, s.level + 1, NODE_LEFT });
 	}
+
+	return bvh;
 }

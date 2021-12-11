@@ -41,18 +41,20 @@ struct AABB {
 	}
 };
 
-struct BVHBuilder {
+struct BVH {
+	using Node = uint32_t;
+
 	// maxPrimitives is the maximum number of primitives a leaf can contain.
-	const int32_t maxPrimitives;
+	const uint32_t maxPrimitives;
 
-	// depth is the maximum depth of the hierarchy.
-	int32_t depth = 0;
+	// depth is the maximum depth of the tree.
+	uint32_t depth = 0;
 
-	std::vector<uint32_t> subtrees;
+	std::vector<Node> nodes;
 	std::vector<AABB> bounds;
-	std::vector<uint32_t> leaf_nodes;
+	std::vector<uint32_t> primitives;
 
-	BVHBuilder(int32_t maxPrimitives) : maxPrimitives(maxPrimitives) {}
-
-	void construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic);
+	BVH(uint32_t maxPrimitives) : maxPrimitives(maxPrimitives) {}
 };
+
+BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, uint32_t maxPrimitives, Heuristic heuristic);
