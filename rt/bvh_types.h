@@ -5,8 +5,6 @@
 
 enum Heuristic { SAH, MEDIAN };
 
-enum SplitDescent { NODE_LEFT, NODE_RIGHT };
-
 struct AABB {
 	vec3 min, max;
 
