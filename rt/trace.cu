@@ -378,9 +378,8 @@ void run(Configuration& config) {
 	std::vector<VertexData> bvhVertexData(mesh.vertices.size());
 
 	for (int i = 0; i < bvh.primitives.size(); i++) {
-		uint32_t f = bvh.primitives[i];
-		if (f == -1u) bvhFaces[i] = Face(0, 0, 0);
-		else bvhFaces[i] = mesh.faces[bvh.primitives[i]];
+		uint32_t sourceIndex = bvh.primitives[i];
+		bvhFaces[i] = (sourceIndex == -1u) ? Face() : mesh.faces[sourceIndex];
 	}
 
 	for (int i = 0; i < mesh.vertices.size(); i++) {
