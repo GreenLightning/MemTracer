@@ -54,7 +54,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		float min_cost = std::numeric_limits<float>::infinity();
 		std::vector<uint32_t> dimperms(s.count * 3);
 		float costs[NBINS * 3];
-		vec3 mins_l[NBINS * 3], maxs_l[NBINS * 3], mins_r[NBINS * 3], maxs_r[NBINS * 3];
+	
 		float max_d = 0, max_d_axis;
 		for (int axis = 0; axis < 3; ++axis) {
 			for (int i = 0; i < s.count; ++i) {
@@ -66,39 +66,31 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 				return centers[a][axis] < centers[b][axis];
 			});
 
-			vec3 min_l(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()), max_l(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity());
-			vec3 min_r(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()), max_r(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity());
+			AABB aabbLeft, aabbRight;
 			float surface_l[NBINS] = { 0 }, surface_r[NBINS] = { 0 };
 			for (int j = 0; j < binsize * NBINS; ++j) {
 				int jj = binsize * NBINS - 1 - j;
 
 				if (jj % binsize == binsize - 1) {
-					vec3 d = max_r - min_r;
+					vec3 d = aabbRight.size();
 					surface_r[jj / binsize] = d.x * d.y + d.x * d.z + d.y * d.z;
-
-					mins_r[axis * NBINS + jj / binsize] = min_r;
-					maxs_r[axis * NBINS + jj / binsize] = max_r;
 				}
+
 				if (j < s.count) {
-					min_l = min(min_l, aabbs[dp[j]].min);
-					max_l = max(max_l, aabbs[dp[j]].max);
+					aabbLeft.feed(aabbs[dp[j]]);
 				}
 
 				if (jj < s.count) {
-					min_r = min(min_r, aabbs[dp[jj]].min);
-					max_r = max(max_r, aabbs[dp[jj]].max);
+					aabbRight.feed(aabbs[dp[jj]]);
 				}
 
 				if (j % binsize == binsize - 1) {
-					vec3 d = max_l - min_l;
+					vec3 d = aabbLeft.size();
 					surface_l[j / binsize] = d.x * d.y + d.x * d.z + d.y * d.z;
 					if (std::isnan(surface_l[j / binsize]) || std::isinf(surface_l[j / binsize])) surface_l[j / binsize] = std::numeric_limits<float>::infinity();
-
-					mins_l[axis * NBINS + j / binsize] = min_l;
-					maxs_l[axis * NBINS + j / binsize] = max_l;
 				}
 			}
-			vec3 d = max_l - min_l;
+			vec3 d = aabbLeft.size();
 			if (axis == 0) {
 				if (d.x > max_d) {
 					max_d = d.x;
@@ -139,8 +131,6 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 			best_split = s.count / 2;
 		}
 
-
-
 		for (int i = 0; i < s.count; ++i) {
 			perm[s.offset + i] = dimperms[i + best_axis * s.count];
 		}
@@ -150,22 +140,19 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		int nr = s.count - nl;
 
 		// calculate complete AABBs
-		AABB aabb_l, aabb_r;
+		AABB aabbLeft, aabbRight;
 		for (int i = 0; i < nl; ++i) {
-			aabb_l.feed_min(aabbs[perm[s.offset + i]].min);
-			aabb_l.feed_max(aabbs[perm[s.offset + i]].max);
+			aabbLeft.feed(aabbs[perm[s.offset + i]]);
 		}
 		for (int i = 0; i < nr; ++i) {
-			aabb_r.feed_min(aabbs[perm[s.offset + nl + i]].min);
-			aabb_r.feed_max(aabbs[perm[s.offset + nl + i]].max);
+			aabbRight.feed(aabbs[perm[s.offset + nl + i]]);
 		}
-
 
 		uint32_t lhs_min, lhs_max, rhs_min, rhs_max;
 
 		if (nl < 0 || nr < 0) throw std::runtime_error("Negative split count");
 		this->set_axis(cur_node, best_axis);
-		this->set_bounds(cur_node, aabb_l, aabb_r);
+		this->set_bounds(cur_node, aabbLeft, aabbRight);
 
 		bool r = nr > maxPrimitives;
 		bool l = nl > maxPrimitives;
