@@ -13,16 +13,12 @@
 #define NBINS 256
 
 struct Split {
-	uint32_t o, l;
+	uint32_t offset, count;
 	uint32_t node;
 	uint32_t split_axis;
 	bool leaf;
 	int32_t level;
 	SplitDescent desc;
-	Split()
-	{}
-	Split(uint32_t o, uint32_t l, uint32_t node, uint32_t split_axis, bool leaf, int32_t level = 0, SplitDescent desc = NODE_LEFT) : o(o), l(l), node(node), split_axis(split_axis), leaf(leaf), level(level), desc(desc)
-	{}
 };
 
 void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic) {
@@ -30,23 +26,19 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 	const uint32_t minSplitCount = maxPrimitives + (maxPrimitives & 1) + 2;
 
 	std::vector<uint32_t> perm(aabbs.size());
-	std::vector<uint32_t> tree;
-	std::iota(perm.begin(), perm.begin() + perm.size(), 0);
+	std::iota(perm.begin(), perm.end(), 0);
 
 	std::vector<Split> splitStack;
 	
 	bool dosplit = aabbs.size() > maxPrimitives;
 
-	splitStack.emplace_back(0, aabbs.size(), -1u, 0, !dosplit, 0);
-	int o, l, nidx, split_axis, parent_node;
+	splitStack.push_back(Split{ 0, aabbs.size(), -1u, 0, !dosplit, 0, NODE_LEFT });
+	int  nidx, split_axis, parent_node;
 	int32_t level;
 
-	double total = 0.;
-	uint32_t finalized = 0;
-	int RR = 0;
 	while (!splitStack.empty()) {
 		Split s = splitStack.back(); splitStack.pop_back();
-		o = s.o; l = s.l; parent_node = s.node; split_axis = s.split_axis; level = s.level;
+		parent_node = s.node; split_axis = s.split_axis; level = s.level;
 		uint32_t cur_node = this->emit_node(level, parent_node, s.desc);
 
 		// get bounding triangles and swap them to the first two positions of perm
@@ -54,23 +46,23 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		uint32_t idx;
 
 		if (s.leaf) {
-			this->set_leaf(cur_node, perm.data() + o, l, maxPrimitives);
+			this->set_leaf(cur_node, perm.data() + s.offset, s.count, maxPrimitives);
 			continue;
 		}
 
-		uint32_t binsize = (l + NBINS - 1) / NBINS;
+		uint32_t binsize = (s.count + NBINS - 1) / NBINS;
 		float min_cost = std::numeric_limits<float>::infinity();
-		std::vector<uint32_t> dimperms(l * 3);
+		std::vector<uint32_t> dimperms(s.count * 3);
 		float costs[NBINS * 3];
 		vec3 mins_l[NBINS * 3], maxs_l[NBINS * 3], mins_r[NBINS * 3], maxs_r[NBINS * 3];
 		float max_d = 0, max_d_axis;
 		for (int axis = 0; axis < 3; ++axis) {
-			for (int i = 0; i < l; ++i) {
-				dimperms[i + axis * l] = perm[o + i];
+			for (int i = 0; i < s.count; ++i) {
+				dimperms[i + axis * s.count] = perm[s.offset + i];
 			}
 
-			uint32_t *dp = dimperms.data() + axis * l;
-			std::sort(dp, dp + l, [&](uint32_t a, uint32_t b) {
+			uint32_t *dp = dimperms.data() + axis * s.count;
+			std::sort(dp, dp + s.count, [&](uint32_t a, uint32_t b) {
 				return centers[a][axis] < centers[b][axis];
 			});
 
@@ -87,12 +79,12 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 					mins_r[axis * NBINS + jj / binsize] = min_r;
 					maxs_r[axis * NBINS + jj / binsize] = max_r;
 				}
-				if (j < l) {
+				if (j < s.count) {
 					min_l = min(min_l, aabbs[dp[j]].min);
 					max_l = max(max_l, aabbs[dp[j]].max);
 				}
 
-				if (jj < l) {
+				if (jj < s.count) {
 					min_r = min(min_r, aabbs[dp[jj]].min);
 					max_r = max(max_r, aabbs[dp[jj]].max);
 				}
@@ -126,7 +118,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 				float lhs = surface_l[k] / surface;
 				float rhs = surface_r[k] / surface;
 				uint32_t num_l = (k + 1) * binsize;
-				uint32_t num_r = l - num_l;
+				uint32_t num_r = s.count - num_l;
 				costs[axis * NBINS + k] = lhs * num_l + rhs * num_r;
 				costs[axis * NBINS + k] += (1 - std::min(num_l, minSplitCount) / (float)minSplitCount) + (1 - std::min(num_r, minSplitCount) / (float)minSplitCount);
 			}
@@ -144,28 +136,28 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 
 		if (heuristic == MEDIAN) {
 			best_axis = max_d_axis/*(split_axis + 1) % 3*/;
-			best_split = l / 2;
+			best_split = s.count / 2;
 		}
 
 
 
-		for (int i = 0; i < l; ++i) {
-			perm[o + i] = dimperms[i + best_axis * l];
+		for (int i = 0; i < s.count; ++i) {
+			perm[s.offset + i] = dimperms[i + best_axis * s.count];
 		}
 
 		// new split
 		int nl = best_split;
-		int nr = l - nl;
+		int nr = s.count - nl;
 
 		// calculate complete AABBs
 		AABB aabb_l, aabb_r;
 		for (int i = 0; i < nl; ++i) {
-			aabb_l.feed_min(aabbs[perm[o + i]].min);
-			aabb_l.feed_max(aabbs[perm[o + i]].max);
+			aabb_l.feed_min(aabbs[perm[s.offset + i]].min);
+			aabb_l.feed_max(aabbs[perm[s.offset + i]].max);
 		}
 		for (int i = 0; i < nr; ++i) {
-			aabb_r.feed_min(aabbs[perm[o + nl + i]].min);
-			aabb_r.feed_max(aabbs[perm[o + nl + i]].max);
+			aabb_r.feed_min(aabbs[perm[s.offset + nl + i]].min);
+			aabb_r.feed_max(aabbs[perm[s.offset + nl + i]].max);
 		}
 
 
@@ -178,7 +170,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		bool r = nr > maxPrimitives;
 		bool l = nl > maxPrimitives;
 
-		splitStack.emplace_back(o + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT);
-		splitStack.emplace_back(o, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT);
+		splitStack.push_back(Split{ s.offset + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT });
+		splitStack.push_back(Split{ s.offset, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT });
 	}
 }
