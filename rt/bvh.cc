@@ -30,7 +30,7 @@ struct SplitX {
 
 void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, Heuristic heuristic) {
 	int max_axis = 3;
-	uint32_t leafminsplitcount = maxLeaves + (maxLeaves & 1) + 2;
+	uint32_t leafminsplitcount = maxPrimitives + (maxPrimitives & 1) + 2;
 
 	std::vector<uint32_t> perm(aabbs.size());
 	std::vector<uint32_t> tree;
@@ -38,7 +38,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 
 	std::deque<SplitX> S;
 	
-	bool dosplit = aabbs.size() > maxLeaves;
+	bool dosplit = aabbs.size() > maxPrimitives;
 
 	S.emplace_back(0, aabbs.size(), -1u, 0, !dosplit, 0);
 	int o, l, nidx, split_axis, parent_node;
@@ -61,7 +61,7 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		// min
 // 		std::cout << "SPLIT AXIS: " << split_axis << std::endl;
 		if (s.leaf) {
-			this->set_leaf(cur_node, perm.data() + o, l, maxLeaves);
+			this->set_leaf(cur_node, perm.data() + o, l, maxPrimitives);
 			continue;
 		}
 
@@ -182,8 +182,8 @@ void BVHBuilder::construct(const std::vector<AABB>& aabbs, const std::vector<vec
 		this->set_axis(cur_node, best_axis);
 		this->set_bounds(cur_node, aabb_l, aabb_r);
 
-		bool r = nr > maxLeaves;
-		bool l = nl > maxLeaves;
+		bool r = nr > maxPrimitives;
+		bool l = nl > maxPrimitives;
 
 		S.emplace_back(o + nl, nr, cur_node, best_axis, !r, level + 1, NODE_RIGHT);
 		S.emplace_back(o, nl, cur_node, best_axis, !l, level + 1, NODE_LEFT);

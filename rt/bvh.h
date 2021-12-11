@@ -11,8 +11,6 @@
 
 #include "bvh_types.h"
 
-// Der BVH tree ist als uint32 array implementiert, bei dem zwei bits markieren (aus historischen Gründen 2 und nicht 1), obs ein leaf ist und die anderen bits den offset zum rechten child angeben (der linke ist das nächste Element)
-//
 struct BVHBuilder {
 	struct Parent {
 		uint32_t idx, subtree;
@@ -20,7 +18,10 @@ struct BVHBuilder {
 		Parent() : subtree(0) {}
 	};
 
-	const int32_t maxLeaves;
+	// maxPrimitives is the maximum number of primitives a leaf can contain.
+	const int32_t maxPrimitives;
+
+	// depth is the maximum depth of the hierarchy.
 	int32_t depth = 0;
 
 	std::vector<AABB> bounds;
@@ -28,7 +29,7 @@ struct BVHBuilder {
 	std::vector<uint32_t> leaf_nodes;
 	std::vector<Parent> parents;
 
-	BVHBuilder(int32_t maxLeaves) : maxLeaves(maxLeaves), parents(128) {}
+	BVHBuilder(int32_t maxPrimitives) : maxPrimitives(maxPrimitives), parents(128) {}
 
 	uint32_t emit_node(int32_t level = 0, uint32_t parent = -1u, SplitDescent desc = NODE_LEFT) {
 		depth = max(level, depth);

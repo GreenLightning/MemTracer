@@ -115,7 +115,7 @@ struct StackEntry {
 	uint32_t nodeIndex, leafIndex;
 };
 
-__device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int32_t maxLeaves, const Ray& ray) {
+__device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, int32_t maxPrimitives, const Ray& ray) {
 	StackEntry stack[128];
 	uint32_t top = 0; // index of first free stack entry
 
@@ -138,7 +138,7 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const 
 			// Iterate over contained triangles.
 			// Payload contains the number of triangles.
 
-			uint32_t offset = entry.leafIndex * uint32_t(maxLeaves);
+			uint32_t offset = entry.leafIndex * uint32_t(maxPrimitives);
 			for (int i = 0; i < payload; i++) {
 				HitPoint currentHitpoint;
 				bool currentHit = intersectRayTriangle(ray, faces, vertices, offset + i, currentHitpoint);
@@ -153,8 +153,6 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const 
 			// This node is an inner node.
 			// Recursively traverse both children.
 			// Payload contains the offset to the right child.
-
-			uint32_t boundsIndex = entry.nodeIndex - entry.leafIndex;
 
 			// Compute node indices of our children.
 			// The left child is our immediate neighbor.
@@ -172,6 +170,12 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const uint32_t* subtrees, const 
 			// leaf nodes to skip by dividing (offset + 1) by 2.
 			uint32_t leftLeafIndex = entry.leafIndex;
 			uint32_t rightLeafIndex = entry.leafIndex + (payload + 1) / 2;
+
+			// Conversely, we can compute the number of inner nodes as the
+			// difference of total nodes and leaf nodes, which is used to index
+			// into the bounds array, as only inner nodes store the bounds of
+			// their children.
+			uint32_t boundsIndex = entry.nodeIndex - entry.leafIndex;
 
 			// Compute intersections with child bounds.
 			float tminLeft, tmaxLeft, tminRight, tmaxRight;
@@ -225,7 +229,7 @@ __device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hit_s
 	return vec3(v, v, v);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int32_t maxLeaves) {
+__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int32_t maxPrimitives) {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
 	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
@@ -237,7 +241,7 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* 
 	Ray ray = makeViewRay(x + 0.5f, y + 0.5f, w, h, cam);
 
 	HitPoint hitpoint;
-	bool hit = traverseBVH(hitpoint, subtrees, bounds, faces, vertices, maxLeaves, ray);
+	bool hit = traverseBVH(hitpoint, subtrees, bounds, faces, vertices, maxPrimitives, ray);
 
 	vec3 color;
 	if (hit) {
@@ -273,16 +277,16 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const uint32_t* 
 	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
 }
 
-void trace(uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int32_t maxLeaves) {
+void trace(uint8_t* framebuffer, const uint32_t* subtrees, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, int32_t maxPrimitives) {
 #ifdef __CUDACC__
 	dim3 blockDim(8, 8);
 	dim3 gridDim((w + blockDim.x - 1) / blockDim.x, (h + blockDim.y - 1) / blockDim.y);
-	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxLeaves);
+	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
 	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; y++) {
 		for (int x = 0; x < w; x++) {
-			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxLeaves);
+			traceKernel(x, y, framebuffer, subtrees, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
 		}
 	}
 #endif
@@ -403,7 +407,7 @@ void run(Configuration& config) {
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rendering..." << std::endl;
-	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), bvhb.maxLeaves);
+	trace(d_framebuffer, d_subtrees, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), bvhb.maxPrimitives);
 	my_synchronize();
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
