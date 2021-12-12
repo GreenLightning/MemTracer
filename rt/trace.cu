@@ -80,22 +80,21 @@ __device__ void intersectRayAABB(const Ray& ray, const AABB& aabb, float& tmin, 
 }
 
 __device__ bool intersectRayTriangle(const Ray& ray, const Face* faces, const vec3* vertices, uint32_t idx, HitPoint& hitpoint) {
+	// From Wikipedia: Möller-Trumbore intersection algorithm
+
 	Face face = faces[idx];
 	vec3 v0 = vertices[face.idx[0]];
 	vec3 v1 = vertices[face.idx[1]];
 	vec3 v2 = vertices[face.idx[2]];
-
-	// From Wikipedia: Möller-Trumbore intersection algorithm
-	const float EPSILON = FLT_EPSILON;
 
 	vec3 e1 = v1 - v0;
 	vec3 e2 = v2 - v0;
 
 	vec3 h = cross(ray.dir, e2);
 	float a = dot(e1, h);
-	if (a > -EPSILON && a < EPSILON) return false; // The ray is parallel to the triangle.
-
 	float f = 1.0f / a;
+	if (!isfinite(f)) return false; // The ray is parallel to the triangle.
+
 	vec3 s = ray.origin - v0;
 	float u = f * dot(s, h);
 	if (u < 0.0 || u > 1.0) return false; // The ray intersects the plane outside of the triangle.
@@ -106,7 +105,7 @@ __device__ bool intersectRayTriangle(const Ray& ray, const Face* faces, const ve
 
 	// At this stage we can compute t to find out where the intersection point is on the ray.
 	float t = f * dot(e2, q);
-	if (t < EPSILON) return false; // The intersection is on the wrong side of the ray origin.
+	if (t < FLT_EPSILON) return false; // The intersection is on the wrong side of the ray origin.
 
 	hitpoint.t = t;
 	hitpoint.u = u;
