@@ -64,4 +64,17 @@ void loadConfiguration(Configuration& config, const std::string& path) {
 			config.camera.vertical_fov = value.is_floating() ? value.as_floating(std::nothrow) : static_cast<double>(value.as_integer());
 		}
 	}
+
+	if (data.contains("light")) {
+		auto light = toml::find(data, "light");
+
+		if (light.contains("position")) {
+			auto position = toml::find(light, "position");
+			if (!position.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", position, "here"));
+			if (position.size() != 3) throw std::runtime_error(toml::format_error("[error] position should have three elements", position, "here"));
+			config.light.x = toml::find<float>(position, 0);
+			config.light.y = toml::find<float>(position, 1);
+			config.light.z = toml::find<float>(position, 2);
+		}
+	}
 }

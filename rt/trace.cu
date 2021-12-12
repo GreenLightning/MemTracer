@@ -237,14 +237,12 @@ __device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hit_s
 	return vec3(v, v, v);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
+__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
 	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
 	if (x >= w || y >= h) return;
 #endif
-
-	static const float light[] = { 50, 220, 1140 };
 
 	Ray ray = makeViewRay(x + 0.5f, y + 0.5f, w, h, cam);
 
@@ -271,9 +269,11 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 		Vertex vertex;
 		vertex.position = v0 * w + v1 * u + v2 * v;
 		vertex.normal = d0.normal * w + d1.normal * u + d2.normal * v;
-	
-		bool hit_shadow = false;
-		color = computeColor(vertex, light, hit_shadow);
+
+		vec3 lightPos(light.x, light.y, light.z);
+
+		bool hitShadow = false;
+		color = computeColor(vertex, lightPos, hitShadow);
 	} else {
 		// Compute background color gradient.
 		float tc = (y + 0.5) / h;
@@ -285,16 +285,16 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
 }
 
-void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
+void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
 #ifdef __CUDACC__
 	dim3 blockDim(8, 8);
 	dim3 gridDim((w + blockDim.x - 1) / blockDim.x, (h + blockDim.y - 1) / blockDim.y);
-	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
+	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, light, w, h, maxPrimitives);
 	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; y++) {
 		for (int x = 0; x < w; x++) {
-			traceKernel(x, y, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, w, h, maxPrimitives);
+			traceKernel(x, y, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, light, w, h, maxPrimitives);
 		}
 	}
 #endif
@@ -414,7 +414,7 @@ void run(Configuration& config) {
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rendering..." << std::endl;
-	trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, output.width(), output.height(), bvh.maxPrimitives);
+	trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, config.light, output.width(), output.height(), bvh.maxPrimitives);
 	my_synchronize();
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();

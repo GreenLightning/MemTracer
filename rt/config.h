@@ -8,12 +8,17 @@ struct Camera {
 	float vertical_fov = 60;
 };
 
+struct Light {
+	float x = 0, y = 0, z = 0;
+};
+
 struct Configuration {
 	std::string input;
 	std::string output;
 	int32_t width = 0, height = 0;
 	std::string heuristic;
 	Camera camera;
+	Light light;
 };
 
 void loadConfiguration(Configuration& config, const std::string& path);
