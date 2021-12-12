@@ -229,10 +229,74 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const BVH::Node* nodes, const AA
 	}
 }
 
-__device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hit_shadow) {
+// Same as traverseBVH except it returns as soon as any hit is found.
+__device__ bool traverseBVHShadow(const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, uint32_t maxPrimitives, const Ray& ray) {
+	StackEntry stack[128];
+	uint32_t top = 0; // index of first free stack entry
+
+	StackEntry entry = {};
+	entry.tmin = 0; entry.tmax = FLT_MAX;
+	while (true) {
+		BVH::Node node = nodes[entry.nodeIndex];
+		bool isLeaf = node >> 31;
+		uint32_t payload = node & 0x7fffffffu;
+		__syncthreads();
+
+		if (isLeaf) {
+			uint32_t offset = entry.leafIndex * maxPrimitives;
+			for (int i = 0; i < payload; i++) {
+				HitPoint currentHitpoint;
+				bool currentHit = intersectRayTriangle(ray, faces, vertices, offset + i, currentHitpoint);
+				if (currentHit) return true;
+			}
+
+		} else {
+			uint32_t leftNodeIndex = entry.nodeIndex + 1;
+			uint32_t rightNodeIndex = entry.nodeIndex  + payload;
+			uint32_t leftLeafIndex = entry.leafIndex;
+			uint32_t rightLeafIndex = entry.leafIndex + payload / 2;
+			uint32_t boundsIndex = entry.nodeIndex - entry.leafIndex;
+
+			float tminLeft, tmaxLeft, tminRight, tmaxRight;
+			intersectRayAABB(ray, bounds[2 * boundsIndex + 0], tminLeft, tmaxLeft);
+			intersectRayAABB(ray, bounds[2 * boundsIndex + 1], tminRight, tmaxRight);
+
+			tminLeft = max(tminLeft, entry.tmin);
+			tmaxLeft = min(tmaxLeft, entry.tmax);
+			tminRight = max(tminRight, entry.tmin);
+			tmaxRight = min(tmaxRight, entry.tmax);
+
+			if (tminLeft > tmaxLeft || tminRight < tminLeft) {
+				swap(tminLeft, tminRight);
+				swap(tmaxLeft, tmaxRight);
+				swap(leftNodeIndex, rightNodeIndex);
+				swap(leftLeafIndex, rightLeafIndex);
+			}
+
+			if (!(tminRight > tmaxRight)) {
+				stack[top++] = StackEntry{tminRight, tmaxRight, rightNodeIndex, rightLeafIndex};
+			}
+
+			if (!(tminLeft > tmaxLeft)) {
+				entry.tmin = tminLeft;
+				entry.tmax = tmaxLeft;
+				entry.nodeIndex = leftNodeIndex;
+				entry.leafIndex = leftLeafIndex;
+				continue; // don't ascent
+			}
+		}
+
+		if (top == 0) return false;
+		entry = stack[--top];
+	}
+}
+
+__device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hitShadow) {
 	vec3 l = (light - vertex.position).normalizedOrZero();
-	float d = max(dot(l, vertex.normal), 0.0f);
-	float v = clamp(d - (hit_shadow ? 0.5f : 0.0f), 0.0f, 1.0f);
+	vec3 n = vertex.normal.normalizedOrZero();
+	float d = max(dot(l, n), 0.0f);
+	float v = 0.05f + 0.95f * d * (hitShadow ? 0.0f : 1.0f);
+	v = clamp(v, 0.0f, 1.0f);
 	return vec3(v, v, v);
 }
 
@@ -269,9 +333,23 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 		vertex.position = v0 * w + v1 * u + v2 * v;
 		vertex.normal = d0.normal * w + d1.normal * u + d2.normal * v;
 
+		if (false) {
+			// Flat normals.
+			vec3 e1 = v1 - v0;
+			vec3 e2 = v2 - v0;
+			vertex.normal = cross(e1, e2).normalizedOrZero();
+		}
+
 		vec3 lightPos(light.x, light.y, light.z);
 
 		bool hitShadow = false;
+		if (true) {
+			Ray shadowRay;
+			shadowRay.origin = vertex.position + 1e-7 * vertex.normal.normalizedOrZero();
+			shadowRay.dir = (lightPos - shadowRay.origin).normalizedOrZero();
+			hitShadow = traverseBVHShadow(nodes, bounds, faces, vertices, maxPrimitives, shadowRay);
+		}
+
 		color = computeColor(vertex, lightPos, hitShadow);
 	} else {
 		// Compute background color gradient.
