@@ -92,29 +92,27 @@ BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& center
 
 			AABB aabbLeft, aabbRight;
 			float surfaceLeft[numBins] = {}, surfaceRight[numBins] = {};
-			for (int j = 0; j < binSize * numBins; ++j) {
-				int jj = binSize * numBins - 1 - j;
-
-				if (jj % binSize == binSize - 1) {
+			for (int left = 0, right = numBins * binSize - 1; left < numBins * binSize; left++, right--) {
+				if (right % binSize == binSize - 1) {
 					vec3 d = aabbRight.size();
-					surfaceRight[jj / binSize] = d.x * d.y + d.x * d.z + d.y * d.z;
+					surfaceRight[right / binSize] = d.x * d.y + d.x * d.z + d.y * d.z;
 				}
 
-				if (j < s.count) {
-					aabbLeft.feed(aabbs[p[j]]);
-				}
+				if (left < s.count)  aabbLeft.feed(aabbs[p[left]]);
+				if (right < s.count) aabbRight.feed(aabbs[p[right]]);
 
-				if (jj < s.count) {
-					aabbRight.feed(aabbs[p[jj]]);
-				}
-
-				if (j % binSize == binSize - 1) {
+				if (left % binSize == binSize - 1) {
 					vec3 d = aabbLeft.size();
-					surfaceLeft[j / binSize] = d.x * d.y + d.x * d.z + d.y * d.z;
-					if (std::isnan(surfaceLeft[j / binSize]) || std::isinf(surfaceLeft[j / binSize])) surfaceLeft[j / binSize] = std::numeric_limits<float>::infinity();
+					float surface = d.x * d.y + d.x * d.z + d.y * d.z;
+					if (std::isnan(surface) || std::isinf(surface)) surface = std::numeric_limits<float>::infinity();
+					surfaceLeft[left / binSize] = surface;
 				}
 			}
+
+			// Both AABBs now contain all primitives.
 			vec3 d = aabbLeft.size();
+			float surface = d.x * d.y + d.x * d.z + d.y * d.z;
+
 			if (axis == 0) {
 				if (d.x > maxDim) {
 					maxDim = d.x;
@@ -129,25 +127,28 @@ BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& center
 					maxDimAxis = 2;
 				}
 			}
-			float surface = d.x * d.y + d.x * d.z + d.y * d.z;
-			for (int k = 0; k < numBins; ++k) {
+		
+			for (int k = 0; k < numBins; k++) {
 				float lhs = surfaceLeft[k] / surface;
 				float rhs = surfaceRight[k] / surface;
-				uint32_t num_l = (k + 1) * binSize;
-				uint32_t num_r = s.count - num_l;
-				costs[axis * numBins + k] = lhs * num_l + rhs * num_r;
-				costs[axis * numBins + k] += (1 - std::min(num_l, minSplitCount) / (float)minSplitCount) + (1 - std::min(num_r, minSplitCount) / (float)minSplitCount);
+				uint32_t numLeft = (k + 1) * binSize;
+				uint32_t numRight = s.count - numLeft;
+				float cost = lhs * numLeft + rhs * numRight
+					+ (1 - std::min(numLeft, minSplitCount) / (float)minSplitCount)
+					+ (1 - std::min(numRight, minSplitCount) / (float)minSplitCount);
+				costs[axis * numBins + k] = cost;
 			}
 		}
 
 		int bestIndex = 0;
 		float min_cost = std::numeric_limits<float>::infinity();
-		for (int i = 0; i < numBins * 3; ++i) {
+		for (int i = 0; i < 3 * numBins; i++) {
 			if (costs[i] < min_cost) {
 				bestIndex = i;
 				min_cost = costs[i];
 			}
 		}
+
 		int bestSplit = ((bestIndex % numBins) + 1) * binSize;
 		int bestAxis = bestIndex / numBins;
 
