@@ -134,10 +134,11 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const BVH::Node* nodes, const AA
 
 	while (true) {
 		BVH::Node node = nodes[entry.nodeIndex];
-		uint32_t axis = node >> 30, payload = node & 0x3fffffffu;
+		bool isLeaf = node >> 31;
+		uint32_t payload = node & 0x7fffffffu;
 		__syncthreads();
 
-		if (axis == 3) {
+		if (isLeaf) {
 
 			// This node is a leaf node.
 			// Iterate over contained triangles.
@@ -163,18 +164,20 @@ __device__ bool traverseBVH(HitPoint& hitpoint, const BVH::Node* nodes, const AA
 			// The left child is our immediate neighbor.
 			// The right child is given by the offset stored in our node payload.
 			uint32_t leftNodeIndex = entry.nodeIndex + 1;
-			uint32_t rightNodeIndex = entry.nodeIndex + 1 + payload;
+			uint32_t rightNodeIndex = entry.nodeIndex  + payload;
 
 			// Compute leaf indices for our children.
 			// Since an inner node is not a leaf, we pass the leaf index on to
 			// the left child.
 			// For the right child, we know that the whole left subtree fits
 			// exactly into the offset between ourselves and our right child.
-			// Because this is a binary tree, it must have exactly one more leaf
-			// node than inner nodes. Therefore, we can compute the number of
-			// leaf nodes to skip by dividing (offset + 1) by 2.
+			// Because this is a binary tree, it must have exactly one more
+			// leaf node than inner nodes. However, since the current inner
+			// node is counted as well, the number of inner nodes and child
+			// nodes is exactly equal. Therefore, we can compute the number of
+			// leaf nodes to skip by dividing offset by 2.
 			uint32_t leftLeafIndex = entry.leafIndex;
-			uint32_t rightLeafIndex = entry.leafIndex + (payload + 1) / 2;
+			uint32_t rightLeafIndex = entry.leafIndex + payload / 2;
 
 			// Conversely, we can compute the number of inner nodes as the
 			// difference of total nodes and leaf nodes, which is used to index
@@ -368,7 +371,7 @@ void run(Configuration& config) {
 	std::cout << "Building BVH..." << std::endl;
 	Heuristic heuristic = parseHeuristic(config.heuristic);
 	BVH bvh = constructBVH(aabbs, centers, 32, heuristic);
-	std::cout << "BVH: " << bvh.nodes.size() << " nodes; " << bvh.bounds.size() << " aabbs; " << bvh.primitives.size() << " leaves; " << bvh.depth << " max depth" << std::endl;
+	std::cout << "BVH: " << bvh.nodes.size() << " nodes; " << bvh.bounds.size() << " aabbs; " << bvh.primitives.size() << " primitives; " << bvh.depth << " max depth" << std::endl;
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
