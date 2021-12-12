@@ -38,6 +38,22 @@ void loadConfiguration(Configuration& config, const std::string& path) {
 		config.height = toml::find<int32_t>(size, 1);
 	}
 
+	if (data.contains("shading")) {
+		auto shading = toml::find(data, "shading");
+		std::string value = shading.as_string();
+		if (value == "smooth") {
+			config.shading = SMOOTH;
+		} else if (value == "flat") {
+			config.shading = FLAT;
+		} else {
+			throw std::runtime_error(toml::format_error("[error] unknown value for shading", shading, "here"));
+		}
+	}
+
+	if (data.contains("shadows")) {
+		config.shadows = toml::find<bool>(data, "shadows");
+	}
+
 	if (data.contains("heuristic")) {
 		auto heuristic = toml::find(data, "heuristic");
 		std::string value = heuristic.as_string();

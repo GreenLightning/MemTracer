@@ -2,6 +2,10 @@
 
 #include <string>
 
+enum Shading {
+	SMOOTH, FLAT
+};
+
 struct Camera {
 	float x = 0, y = 0, z = 0;
 	float mat[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -16,6 +20,8 @@ struct Configuration {
 	std::string input;
 	std::string output;
 	int32_t width = 0, height = 0;
+	Shading shading = SMOOTH;
+	bool shadows = false;
 	std::string heuristic;
 	Camera camera;
 	Light light;

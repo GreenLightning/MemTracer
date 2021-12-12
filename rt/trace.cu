@@ -300,7 +300,7 @@ __device__ vec3 computeColor(const Vertex& vertex, const vec3& light, bool hitSh
 	return vec3(v, v, v);
 }
 
-__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
+__global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives, bool flat, bool shadows) {
 #ifdef __CUDACC__
 	x = blockDim.x * (0+blockIdx.x) + threadIdx.x;
 	y = blockDim.y * (0+blockIdx.y) + threadIdx.y;
@@ -333,8 +333,8 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 		vertex.position = v0 * w + v1 * u + v2 * v;
 		vertex.normal = d0.normal * w + d1.normal * u + d2.normal * v;
 
-		if (false) {
-			// Flat normals.
+		if (flat) {
+			// Calculate normal for flat shading.
 			vec3 e1 = v1 - v0;
 			vec3 e2 = v2 - v0;
 			vertex.normal = cross(e1, e2).normalizedOrZero();
@@ -343,7 +343,7 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 		vec3 lightPos(light.x, light.y, light.z);
 
 		bool hitShadow = false;
-		if (true) {
+		if (shadows) {
 			Ray shadowRay;
 			shadowRay.origin = vertex.position + 1e-7 * vertex.normal.normalizedOrZero();
 			shadowRay.dir = (lightPos - shadowRay.origin).normalizedOrZero();
@@ -362,16 +362,16 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
 }
 
-void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives) {
+void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives, bool flat, bool shadows) {
 #ifdef __CUDACC__
 	dim3 blockDim(8, 8);
 	dim3 gridDim((w + blockDim.x - 1) / blockDim.x, (h + blockDim.y - 1) / blockDim.y);
-	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, light, w, h, maxPrimitives);
+	traceKernel<<<gridDim, blockDim>>>(0, 0, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, light, w, h, maxPrimitives, flat, shadows);
 	CUDA_CHECK_LAST_ERROR();
 #else
 	for (int y = 0; y < h; y++) {
 		for (int x = 0; x < w; x++) {
-			traceKernel(x, y, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, light, w, h, maxPrimitives);
+			traceKernel(x, y, framebuffer, nodes, bounds, faces, vertices, vertexData, cam, light, w, h, maxPrimitives, flat, shadows);
 		}
 	}
 #endif
@@ -491,7 +491,7 @@ void run(Configuration& config) {
 	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	std::cout << "Rendering..." << std::endl;
-	trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, config.light, output.width(), output.height(), bvh.maxPrimitives);
+	trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, config.light, output.width(), output.height(), bvh.maxPrimitives, config.shading == FLAT, config.shadows);
 	my_synchronize();
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();
@@ -606,6 +606,48 @@ int main(int argc, const char** argv) {
 				return 1;
 			}
 			config.height = value;
+			continue;
+		}
+
+		if (argument == "-shading") {
+			if (i + 1 >= argc) {
+				std::cerr << "missing value for " << argument << std::endl;
+				return 1;
+			}
+			std::string value = argv[++i];
+			if (value == "smooth") {
+				config.shading = SMOOTH;
+			} else if (value == "flat") {
+				config.shading = FLAT;
+			} else {
+				std::cerr << "warning: ignoring unknown value for " << argument << ": " << value << std::endl;
+			}
+			continue;
+		}
+
+		if (argument == "-flat") {
+			config.shading = FLAT;
+			continue;
+		}
+
+		if (argument == "-smooth") {
+			config.shading = SMOOTH;
+			continue;
+		}
+
+		if (argument == "-shadows") {
+			if (i + 1 < argc && argv[i+1][0] != '-') {
+				std::string value = argv[++i];
+				if (value == "true") {
+					config.shadows = true;
+				} else if (value == "false") {
+					config.shadows = false;
+				} else {
+					std::cerr << "warning: ignoring unknown value for " << argument << ": " << value << std::endl;
+				}
+			} else {
+				config.shadows = true;
+			}
 			continue;
 		}
 
