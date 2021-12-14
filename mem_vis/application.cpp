@@ -21,7 +21,7 @@
 
 struct TraceInstruction {
 	uint64_t    instr_addr;
-	const char* opcode;
+	std::string opcode;
 	uint64_t    count = 0;
 	uint64_t    min = UINT64_MAX;
 	uint64_t    max = 0;
@@ -31,6 +31,7 @@ struct Trace {
 	std::string filename;
 	mio::mmap_source mmap;
 	header_t header = {};
+	std::vector<std::string> strings;
 	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
 
@@ -54,7 +55,7 @@ struct Trace {
 			return "invalid file (magic)";
 		}
 
-		if (header.version != 2) {
+		if (header.version != 3) {
 			char buffer[256];
 			snprintf(buffer, sizeof(buffer), "file version (%d) is not supported", header.version);
 			return buffer;
@@ -83,6 +84,21 @@ struct Trace {
 		int match = MeowHashesAreEqual(actualHash, expectedHash);
 		if (!match) return "invalid file (hash)";
 
+		if (header.strings_offset < header.header_size ||
+			header.strings_offset >= mmap.size() ||
+			header.strings_size >= mmap.size() ||
+			header.strings_offset + header.strings_size > mmap.size() ||
+			(header.strings_size != 0 && mmap[header.strings_offset + header.strings_size - 1] != 0)
+		) return "invalid file (strings section)";
+
+		uint64_t string_start = header.strings_offset;
+		for (uint64_t i = 0; i < header.strings_size; i++) {
+			if (mmap[header.strings_offset + i] == 0) {
+				strings.push_back(std::string(&mmap[string_start], &mmap[header.strings_offset + i]));
+				string_start = header.strings_offset + i + 1;
+			}
+		}
+
 		// TODO: Validate other header fields.
 
 		for (int i = 0; i < header.mem_access_count; i++) {
@@ -91,11 +107,10 @@ struct Trace {
 			TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
 			if (count == 0) {
 				instr.instr_addr = ma->instr_addr;
-				instr.opcode = nullptr;
 				for (int i = 0; i < header.addr_info_count; i++) {
 					addr_info_t* info = (addr_info_t*) &mmap[header.addr_info_offset + i * header.addr_info_size];
 					if (info->addr == instr.instr_addr) {
-						instr.opcode = (const char*) &mmap[header.opcode_offset + info->opcode_offset];
+						instr.opcode = strings[info->opcode_string_index];
 						break;
 					}
 				}
@@ -124,7 +139,7 @@ struct Trace {
 
 struct GridInstruction {
 	uint64_t    instr_addr;
-	const char* opcode;
+	std::string opcode;
 	uint64_t    addr;
 	int32_t     description;
 };
@@ -183,11 +198,10 @@ struct Grid {
 				
 				GridInstruction instr;
 				instr.instr_addr = ma->instr_addr;
-				instr.opcode = nullptr;
 				for (int i = 0; i < trace->header.addr_info_count; i++) {
 					addr_info_t* info = (addr_info_t*) &trace->mmap[trace->header.addr_info_offset + i * trace->header.addr_info_size];
 					if (info->addr == instr.instr_addr) {
-						instr.opcode = (const char*) &trace->mmap[trace->header.opcode_offset + info->opcode_offset];
+						instr.opcode = trace->strings[info->opcode_string_index];
 						break;
 					}
 				}
@@ -517,7 +531,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", instr.instr_addr);
 						ImGui::TableNextColumn();
-						ImGui::Text("%s", instr.opcode);
+						ImGui::Text("%s", instr.opcode.c_str());
 						ImGui::TableNextColumn();
 						ImGui::Text("%d", instr.count);
 						ImGui::TableNextColumn();
@@ -598,7 +612,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 					}
 				
 					ImGui::TableNextColumn();
-					ImGui::Text("%s", instr.opcode);
+					ImGui::Text("%s", instr.opcode.c_str());
 					ImGui::TableNextColumn();
 					ImGui::Text("0x%016lx", instr.addr);
 					ImGui::TableNextColumn();

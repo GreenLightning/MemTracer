@@ -323,7 +323,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 
 		// Fill in static header values.
 		ctx_state->header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
-		ctx_state->header.version = 2;
+		ctx_state->header.version = 3;
 		ctx_state->header.header_size = sizeof(header_t);
 		ctx_state->header.mem_access_size = sizeof(mem_access_t);
 		ctx_state->header.launch_info_size = sizeof(launch_info_t);
@@ -361,6 +361,8 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 	SEM_CHECK(sem_wait(&ctx_state->recv_done));
 
 	if (ctx_state->file) {
+		std::vector<std::string> strings;
+
 		ctx_state->header.launch_info_count = ctx_state->launch_infos.size();
 		ctx_state->header.launch_info_offset = ftell(ctx_state->file);
 		MeowAbsorb(&ctx_state->hash_state, sizeof(launch_info_t) * ctx_state->launch_infos.size(), ctx_state->launch_infos.data());
@@ -371,30 +373,24 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 		MeowAbsorb(&ctx_state->hash_state, sizeof(mem_region_t) * ctx_state->mem_regions.size(), ctx_state->mem_regions.data());
 		fwrite(ctx_state->mem_regions.data(), sizeof(mem_region_t), ctx_state->mem_regions.size(), ctx_state->file);
 
-		uint64_t opcode_offset = ftell(ctx_state->file);
-		std::unordered_map<std::string, uint64_t> opcode_offsets;
-		for (auto& address_and_opcode : addr_to_opcode_map) {
-			std::string& opcode = address_and_opcode.second;
-			if (opcode_offsets.count(opcode) == 0) {
-				uint64_t current_offset = ftell(ctx_state->file) - opcode_offset;
-				opcode_offsets[opcode] = current_offset;
-				MeowAbsorb(&ctx_state->hash_state, opcode.size()+1, (void*) opcode.c_str());
-				fwrite(opcode.c_str(), opcode.size()+1, 1, ctx_state->file);
-			}
-		}
-
-		ctx_state->header.opcode_offset = opcode_offset;
-		ctx_state->header.opcode_size   = ftell(ctx_state->file) - opcode_offset;
-
 		ctx_state->header.addr_info_count = addr_to_opcode_map.size();
 		ctx_state->header.addr_info_offset = ftell(ctx_state->file);
 		for (auto address_and_opcode : addr_to_opcode_map) {
-			addr_info_t info;
+			addr_info_t info = {};
 			info.addr = address_and_opcode.first;
-			info.opcode_offset = opcode_offsets[address_and_opcode.second];
+			info.opcode_string_index = static_cast<int32_t>(strings.size());
+			strings.push_back(address_and_opcode.second);
 			MeowAbsorb(&ctx_state->hash_state, sizeof(addr_info_t), &info);
 			fwrite(&info, sizeof(addr_info_t), 1, ctx_state->file);
 		}
+
+		uint64_t strings_offset = ftell(ctx_state->file);
+		for (auto& s : strings) {
+			MeowAbsorb(&ctx_state->hash_state, s.size()+1, (void*) s.c_str());
+			fwrite(s.c_str(), s.size()+1, 1, ctx_state->file);
+		}
+		ctx_state->header.strings_offset = strings_offset;
+		ctx_state->header.strings_size   = ftell(ctx_state->file) - strings_offset;
 
 		MeowAbsorb(&ctx_state->hash_state, sizeof(header_t), &ctx_state->header);
 

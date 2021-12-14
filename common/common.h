@@ -23,8 +23,8 @@ struct header_t {
 	uint64_t addr_info_count;
 	uint64_t addr_info_offset;
 
-	uint64_t opcode_offset;
-	uint64_t opcode_size;
+	uint64_t strings_offset;
+	uint64_t strings_size;
 };
 
 struct mem_access_t {
@@ -56,5 +56,5 @@ struct mem_region_t {
 
 struct addr_info_t {
 	uint64_t addr;
-	uint64_t opcode_offset;
+	int32_t  opcode_string_index;
 };
