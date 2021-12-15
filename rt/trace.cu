@@ -18,10 +18,6 @@
 #include "config.h"
 #include "mesh.h"
 
-#ifdef MEMINF_ENABLED
-	#include "meminf.h"
-#endif
-
 struct Ray {
 	vec3 origin;
 	vec3 dir;
@@ -377,15 +373,12 @@ void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, con
 #endif
 }
 
-void *my_malloc(std::size_t size, int description) {
+void *my_malloc(std::size_t size) {
 	void* result = nullptr;
 	#ifdef __CUDACC__
 		CUDA_CHECK(cudaMalloc(&result, size));
 	#else
 		result = malloc(size);
-	#endif
-	#ifdef MEMINF_ENABLED
-		meminf_describe(result, description);
 	#endif
 	return result;
 }
@@ -471,21 +464,21 @@ void run(Configuration& config) {
 
 	std::cout << "Uploading..." << std::endl;
 	image_b output(config.width, config.height, 3);
-	uint8_t* d_framebuffer = (uint8_t*) my_malloc(output.size(), 0);
+	uint8_t* d_framebuffer = (uint8_t*) my_malloc(output.size());
 
-	BVH::Node *d_nodes = (BVH::Node*) my_malloc(bvh.nodes.size() * sizeof(BVH::Node), 1);
+	BVH::Node *d_nodes = (BVH::Node*) my_malloc(bvh.nodes.size() * sizeof(BVH::Node));
 	my_upload(d_nodes, bvh.nodes.data(), bvh.nodes.size() * sizeof(BVH::Node));
 
-	AABB* d_bounds = (AABB*) my_malloc(bvh.bounds.size() * sizeof(AABB), 2);
+	AABB* d_bounds = (AABB*) my_malloc(bvh.bounds.size() * sizeof(AABB));
 	my_upload(d_bounds, bvh.bounds.data(), bvh.bounds.size() * sizeof(AABB));
 
-	Face* d_faces = (Face*) my_malloc(bvhFaces.size() * sizeof(Face), 3);
+	Face* d_faces = (Face*) my_malloc(bvhFaces.size() * sizeof(Face));
 	my_upload(d_faces, bvhFaces.data(), bvhFaces.size() * sizeof(Face));
 
-	vec3* d_vertices = (vec3*) my_malloc(bvhVertices.size() * sizeof(vec3), 4);
+	vec3* d_vertices = (vec3*) my_malloc(bvhVertices.size() * sizeof(vec3));
 	my_upload(d_vertices, bvhVertices.data(), bvhVertices.size() * sizeof(vec3));
 
-	VertexData *d_vertexData = (VertexData*) my_malloc(bvhVertexData.size() * sizeof(VertexData), 5);
+	VertexData *d_vertexData = (VertexData*) my_malloc(bvhVertexData.size() * sizeof(VertexData));
 	my_upload(d_vertexData, bvhVertexData.data(), bvhVertexData.size() * sizeof(VertexData));
 
 	ts[ti++] = std::chrono::high_resolution_clock::now();

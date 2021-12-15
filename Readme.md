@@ -6,7 +6,6 @@ Bounding Volume Hierarchy Reconstruction from Memory Traces (using Binary Instru
 
 - `rt` example ray tracer
 - `mem_trace` binary instrumentation tool
-- `meminf` backchannel to pass buffer information
 
 ## Building
 

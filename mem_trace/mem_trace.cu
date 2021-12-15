@@ -42,7 +42,6 @@
 
 #include "nvbit.h"
 #include "utils/channel.hpp"
-#include "meminf_data.h"
 #include "meow_hash_x64_aesni.h"
 #include "common.h"
 

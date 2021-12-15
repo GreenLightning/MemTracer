@@ -16,7 +16,6 @@ set_source_files_properties(inject_funcs.cu PROPERTIES COMPILE_FLAGS " -maxrregc
 set_source_files_properties(mem_trace.cu PROPERTIES COMPILE_FLAGS "-Xcompiler \"-mavx2 -maes\"")
 
 target_link_libraries(mem_trace_inject_funcs NVBit)
-target_link_libraries(mem_trace NVBit cuda $<TARGET_OBJECTS:mem_trace_inject_funcs> $<TARGET_OBJECTS:meminf_impl>)
-target_include_directories(mem_trace PRIVATE $<TARGET_PROPERTY:meminf_impl,INCLUDE_DIRECTORIES>)
+target_link_libraries(mem_trace NVBit cuda $<TARGET_OBJECTS:mem_trace_inject_funcs>)
 target_include_directories(mem_trace_inject_funcs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 target_include_directories(mem_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
