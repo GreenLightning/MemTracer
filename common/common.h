@@ -49,9 +49,9 @@ struct launch_info_t {
 
 struct mem_region_t {
 	uint64_t grid_launch_id;
+	uint64_t mem_region_id;
 	uint64_t start;
 	uint64_t size;
-	int32_t  description;
 };
 
 struct addr_info_t {

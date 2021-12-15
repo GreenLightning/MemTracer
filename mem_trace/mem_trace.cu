@@ -50,7 +50,15 @@
 
 #define CHANNEL_SIZE (1l << 20)
 
+#define DEFINE_API_CUDA_STR(area, id, name, params) #name,
+const char* const ApiCudaStr[] = {
+	"invalid",
+	CU_TOOLS_FOR_EACH_CUDA_API_FUNC(DEFINE_API_CUDA_STR)
+};
+
 struct context_state_t {
+	std::vector<mem_region_t> active_mem_regions;
+
 	FILE* file = nullptr;
 
 	header_t header;
@@ -72,6 +80,7 @@ std::unordered_map<CUcontext, context_state_t*> ctx_state_map;
 std::unordered_set<CUfunction> already_instrumented;
 std::map<uint64_t, std::string> addr_to_opcode_map;
 uint64_t next_grid_launch_id = 0;
+uint64_t next_mem_region_id = 0;
 int next_channel_id = 0;
 
 // Global control variables for this tool.
@@ -166,66 +175,108 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 	assert(ctx_state_map.find(ctx) != ctx_state_map.end());
 	context_state_t* ctx_state = ctx_state_map[ctx];
 
-	if (cbid == API_CUDA_cuLaunchKernel_ptsz ||
-		cbid == API_CUDA_cuLaunchKernel) {
-		cuLaunchKernel_params* p = (cuLaunchKernel_params*)params;
-
-		// Make sure GPU is idle.
-		cudaDeviceSynchronize();
-		assert(cudaGetLastError() == cudaSuccess);
-
-		if (!is_exit) {
-			instrument_function_if_needed(ctx, p->f);
-
-			int nregs = 0;
-			CUDA_SAFECALL(cuFuncGetAttribute(&nregs, CU_FUNC_ATTRIBUTE_NUM_REGS, p->f));
-
-			int shmem_static_nbytes = 0;
-			CUDA_SAFECALL(cuFuncGetAttribute(&shmem_static_nbytes, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, p->f));
-
-			const char* func_name = nvbit_get_func_name(ctx, p->f);
-			uint64_t func_addr = nvbit_get_func_addr(p->f);
-			uint64_t current_grid_launch_id = next_grid_launch_id++;
-
-			nvbit_set_at_launch(ctx, p->f, &current_grid_launch_id, sizeof(uint64_t));
-			nvbit_enable_instrumented(ctx, p->f, true);
-
-			printf(
-				"MEMTRACE: CTX 0x%016lx - LAUNCH - Kernel 0x%016lx - Kernel "
-				"name %s - grid launch id %ld - grid size %d,%d,%d - block "
-				"size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
-				(uint64_t)ctx, func_addr, func_name, current_grid_launch_id, p->gridDimX,
-				p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
-				p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes,
-				(uint64_t)p->hStream
-			);
-
-			launch_info_t info = {};
-			info.grid_launch_id = current_grid_launch_id;
-			info.grid_dim_x = p->gridDimX;
-			info.grid_dim_y = p->gridDimY;
-			info.grid_dim_z = p->gridDimZ;
-			info.block_dim_x = p->blockDimX;
-			info.block_dim_y = p->blockDimY;
-			info.block_dim_z = p->blockDimZ;
-			ctx_state->launch_infos.push_back(info);
-
-			// Record memory regions at launch time.
-			// TODO: Remove info from meminf array on free.
-			for (auto start_and_info : meminfs) {
-				size_t size;
-				if (cuPointerGetAttribute(&size, CU_POINTER_ATTRIBUTE_RANGE_SIZE, start_and_info.first) != CUDA_SUCCESS) {
-					fprintf(stderr, "Invalid meminf pointer\n");
-					exit(1);
-				}
-				mem_region_t region = {};
-				region.grid_launch_id = current_grid_launch_id;
-				region.start = start_and_info.first;
-				region.size = size;
-				region.description = start_and_info.second.desc;
-				ctx_state->mem_regions.push_back(region);
+	switch (cbid) {
+		case API_CUDA_cuMemAlloc:
+		case API_CUDA_cu64MemAlloc:
+		case API_CUDA_cuMemAllocPitch:
+		case API_CUDA_cu64MemAllocPitch:
+		case API_CUDA_cuMemAllocHost:
+		case API_CUDA_cuMemHostAlloc:
+		case API_CUDA_cu64MemHostAlloc:
+		case API_CUDA_cuMemAllocPitch_v2:
+		case API_CUDA_cuMemHostAlloc_v2:
+		case API_CUDA_cuMemAllocHost_v2:
+		case API_CUDA_cuMemAllocManaged:
+		case API_CUDA_cuMemAllocAsync:
+		case API_CUDA_cuMemAllocAsync_ptsz:
+		case API_CUDA_cuMemAllocFromPoolAsync:
+		case API_CUDA_cuMemAllocFromPoolAsync_ptsz:
+		case API_CUDA_cuMemFree:
+		case API_CUDA_cu64MemFree:
+		case API_CUDA_cuMemFreeHost:
+		case API_CUDA_cuMemFreeAsync:
+		case API_CUDA_cuMemFreeAsync_ptsz:
+		{
+			if (!is_exit) {
+				int index = (cbid < sizeof(ApiCudaStr)/sizeof(ApiCudaStr[0])) ? (int) cbid : 0;
+				fprintf(stderr, "MEMTRACE: WARNING: Calling unhandled memory management function %s (cbid=%d)\n", ApiCudaStr[index], cbid);
 			}
-		}
+		} break;
+
+		case API_CUDA_cuMemAlloc_v2: {
+			if (is_exit) {
+				cuMemAlloc_v2_params* p = (cuMemAlloc_v2_params*)params;
+				mem_region_t region = {};
+				region.mem_region_id = next_mem_region_id++;
+				region.start = static_cast<uint64_t>(*p->dptr);
+				region.size = p->bytesize;
+				ctx_state->active_mem_regions.push_back(region);
+			}
+		} break;
+
+		case API_CUDA_cuMemFree_v2: {
+			if (!is_exit) {
+				cuMemFree_v2_params* p = (cuMemFree_v2_params*)params;
+				for (int i = 0; i < ctx_state->active_mem_regions.size(); i++) {
+					if (ctx_state->active_mem_regions[i].start == p->dptr) {
+						ctx_state->active_mem_regions.erase(ctx_state->active_mem_regions.begin() + i);
+						break;
+					}
+				}
+			}
+		} break;
+
+		case API_CUDA_cuLaunchKernel:
+		case API_CUDA_cuLaunchKernel_ptsz: {
+			cuLaunchKernel_params* p = (cuLaunchKernel_params*)params;
+
+			// Make sure GPU is idle.
+			cudaDeviceSynchronize();
+			assert(cudaGetLastError() == cudaSuccess);
+
+			if (!is_exit) {
+				instrument_function_if_needed(ctx, p->f);
+
+				int nregs = 0;
+				CUDA_SAFECALL(cuFuncGetAttribute(&nregs, CU_FUNC_ATTRIBUTE_NUM_REGS, p->f));
+
+				int shmem_static_nbytes = 0;
+				CUDA_SAFECALL(cuFuncGetAttribute(&shmem_static_nbytes, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, p->f));
+
+				const char* func_name = nvbit_get_func_name(ctx, p->f);
+				uint64_t func_addr = nvbit_get_func_addr(p->f);
+				uint64_t current_grid_launch_id = next_grid_launch_id++;
+
+				nvbit_set_at_launch(ctx, p->f, &current_grid_launch_id, sizeof(uint64_t));
+				nvbit_enable_instrumented(ctx, p->f, true);
+
+				printf(
+					"MEMTRACE: CTX 0x%016lx - LAUNCH - Kernel 0x%016lx - Kernel "
+					"name %s - grid launch id %ld - grid size %d,%d,%d - block "
+					"size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
+					(uint64_t)ctx, func_addr, func_name, current_grid_launch_id, p->gridDimX,
+					p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
+					p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes,
+					(uint64_t)p->hStream
+				);
+
+				launch_info_t info = {};
+				info.grid_launch_id = current_grid_launch_id;
+				info.grid_dim_x = p->gridDimX;
+				info.grid_dim_y = p->gridDimY;
+				info.grid_dim_z = p->gridDimZ;
+				info.block_dim_x = p->blockDimX;
+				info.block_dim_y = p->blockDimY;
+				info.block_dim_z = p->blockDimZ;
+				ctx_state->launch_infos.push_back(info);
+
+				// Record memory regions at launch time.
+				for (auto region : ctx_state->active_mem_regions) {
+					region.grid_launch_id = current_grid_launch_id;
+					ctx_state->mem_regions.push_back(region);
+				}
+			}
+		} break;
 	}
 
 	skip_callback_flag = false;
@@ -323,7 +374,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 
 		// Fill in static header values.
 		ctx_state->header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
-		ctx_state->header.version = 3;
+		ctx_state->header.version = 4;
 		ctx_state->header.header_size = sizeof(header_t);
 		ctx_state->header.mem_access_size = sizeof(mem_access_t);
 		ctx_state->header.launch_info_size = sizeof(launch_info_t);

@@ -55,7 +55,7 @@ struct Trace {
 			return "invalid file (magic)";
 		}
 
-		if (header.version != 3) {
+		if (header.version != 4) {
 			char buffer[256];
 			snprintf(buffer, sizeof(buffer), "file version (%d) is not supported", header.version);
 			return buffer;
@@ -141,7 +141,7 @@ struct GridInstruction {
 	uint64_t    instr_addr;
 	std::string opcode;
 	uint64_t    addr;
-	int32_t     description;
+	uint64_t    mem_region_id;
 };
 
 struct Grid {
@@ -206,12 +206,12 @@ struct Grid {
 					}
 				}
 				instr.addr = ma->addrs[targetAccessIndex];
-				instr.description = -1;
+				instr.mem_region_id = UINT64_MAX;
 				for (int i = 0; i < trace->header.mem_region_count; i++) {
 					mem_region_t* region = (mem_region_t*) &trace->mmap[trace->header.mem_region_offset + i * trace->header.mem_region_size];
 					if (region->grid_launch_id != grid_launch_id) continue;
 					if (region->start <= instr.addr && instr.addr < region->start + region->size) {
-						instr.description = region->description;
+						instr.mem_region_id = region->mem_region_id;
 						break;
 					}
 				}
@@ -472,11 +472,11 @@ void appRenderGui(GLFWwindow* window, float delta) {
 			if (ImGui::BeginTable("Memory Regions", 6, flags, ImVec2(0.0f, regionsHeight))) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Region ID", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_None);
 				ImGui::TableHeadersRow();
 
 				ImGuiListClipper clipper;
@@ -488,6 +488,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGui::TableNextColumn();
 						ImGui::Text("%d", region->grid_launch_id);
 						ImGui::TableNextColumn();
+						ImGui::Text("%d", region->mem_region_id);
+						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", region->start);
 						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", region->start + region->size);
@@ -495,8 +497,6 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGui::Text("0x%016lx", region->size);
 						ImGui::TableNextColumn();
 						ImGui::Text("%ld", region->size);
-						ImGui::TableNextColumn();
-						ImGui::Text("%d", region->description);
 					}
 				}
 				ImGui::EndTable();
@@ -616,8 +616,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 					ImGui::TableNextColumn();
 					ImGui::Text("0x%016lx", instr.addr);
 					ImGui::TableNextColumn();
-					if (instr.description >= 0) {
-						ImGui::Text("%d", instr.description);
+					if (instr.mem_region_id != UINT64_MAX) {
+						ImGui::Text("%d", instr.mem_region_id);
 					}
 				}
 			}
