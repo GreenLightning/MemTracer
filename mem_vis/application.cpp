@@ -142,6 +142,7 @@ struct GridInstruction {
 	std::string opcode;
 	uint64_t    addr;
 	uint64_t    mem_region_id;
+	std::string info;
 };
 
 struct Grid {
@@ -196,7 +197,7 @@ struct Grid {
 				mem_access_t* ma = (mem_access_t*) &trace->mmap[trace->header.mem_access_offset + i * trace->header.mem_access_size];
 				if (ma->grid_launch_id != grid_launch_id || ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex || ma->addrs[targetAccessIndex] == 0) continue;
 				
-				GridInstruction instr;
+				GridInstruction instr = {};
 				instr.instr_addr = ma->instr_addr;
 				for (int i = 0; i < trace->header.addr_info_count; i++) {
 					addr_info_t* info = (addr_info_t*) &trace->mmap[trace->header.addr_info_offset + i * trace->header.addr_info_size];
@@ -212,6 +213,22 @@ struct Grid {
 					if (region->grid_launch_id != grid_launch_id) continue;
 					if (region->start <= instr.addr && instr.addr < region->start + region->size) {
 						instr.mem_region_id = region->mem_region_id;
+
+						uint64_t offset = instr.addr - region->start;
+						char buffer[256];
+						if (instr.mem_region_id == 2) {
+							uint64_t floatIndex = offset / 4;
+							uint64_t aabbIndex = floatIndex / 6;
+							uint64_t subIndex = floatIndex % 6;
+							if (subIndex < 3) {
+								snprintf(buffer, sizeof(buffer), "bounds[%d].min[%d]", aabbIndex, subIndex);
+							} else {
+								snprintf(buffer, sizeof(buffer), "bounds[%d].max[%d]", aabbIndex, subIndex - 3);
+							}
+						} else {
+							snprintf(buffer, sizeof(buffer), "%d", offset);
+						}
+						instr.info = std::string(buffer);
 						break;
 					}
 				}
@@ -322,7 +339,8 @@ struct Grid {
 struct Application {
 	int width, height;
 	bool demo = false;
-	uint64_t selected_instr_addr = UINT64_MAX;
+	uint64_t selected_instr_addr    = UINT64_MAX;
+	uint64_t selected_mem_region_id = UINT64_MAX;
 
 	std::unique_ptr<Trace> trace;
 	Grid grid;
@@ -484,11 +502,20 @@ void appRenderGui(GLFWwindow* window, float delta) {
 				while (clipper.Step()) {
 					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 						mem_region_t* region = (mem_region_t*) &trace->mmap[trace->header.mem_region_offset + row * trace->header.mem_region_size];
+						
 						ImGui::TableNextRow();
 						ImGui::TableNextColumn();
 						ImGui::Text("%d", region->grid_launch_id);
 						ImGui::TableNextColumn();
-						ImGui::Text("%d", region->mem_region_id);
+
+						char label[32];
+						snprintf(label, sizeof(label), "%d", region->mem_region_id);
+						ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+						if (ImGui::Selectable(label, app.selected_mem_region_id == region->mem_region_id, selectable_flags)) {
+							app.selected_instr_addr = UINT64_MAX;
+							app.selected_mem_region_id = region->mem_region_id;
+						}
+
 						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", region->start);
 						ImGui::TableNextColumn();
@@ -526,6 +553,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
 						if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
 							app.selected_instr_addr = instr.instr_addr;
+							app.selected_mem_region_id = UINT64_MAX;
 						}
 
 						ImGui::TableNextColumn();
@@ -581,13 +609,14 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		ImGui::Text("Count: %d", app.grid.instructions.size());
 
 		float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-		if (ImGui::BeginTable("Instructions", 5, flags, ImVec2(0.0f, instructionsHeight))) {
+		if (ImGui::BeginTable("Instructions", 6, flags, ImVec2(0.0f, instructionsHeight))) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
 			ImGui::TableHeadersRow();
 
 			ImGuiListClipper clipper;
@@ -595,15 +624,19 @@ void appRenderGui(GLFWwindow* window, float delta) {
 			while (clipper.Step()) {
 				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 					GridInstruction& instr = app.grid.instructions[row];
+
 					ImGui::TableNextRow();
 					ImGui::TableNextColumn();
 					char label[32];
 					snprintf(label, sizeof(label), "%d", row);
 					ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
-					if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
+					bool selected = app.selected_instr_addr == instr.instr_addr ||
+						(app.selected_instr_addr == UINT64_MAX && app.selected_mem_region_id != UINT64_MAX && app.selected_mem_region_id == instr.mem_region_id);
+					if (ImGui::Selectable(label, selected, selectable_flags)) {
 						app.selected_instr_addr = instr.instr_addr;
+						app.selected_mem_region_id = instr.mem_region_id;
 					}
-					
+
 					ImGui::TableNextColumn();
 					if (row > 0 && instr.instr_addr <= app.grid.instructions[row-1].instr_addr) {
 						ImGui::TextColored(ImVec4{1, 0.5, 0.5, 1}, "0x%016lx", instr.instr_addr);
@@ -619,6 +652,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 					if (instr.mem_region_id != UINT64_MAX) {
 						ImGui::Text("%d", instr.mem_region_id);
 					}
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", instr.info.c_str());
 				}
 			}
 			ImGui::EndTable();
