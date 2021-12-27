@@ -25,6 +25,7 @@ struct TraceInstruction {
 	uint64_t    count = 0;
 	uint64_t    min = UINT64_MAX;
 	uint64_t    max = 0;
+	uint64_t    mem_region_id = UINT64_MAX;
 };
 
 struct Trace {
@@ -125,8 +126,17 @@ struct Trace {
 			}
 		}
 
-		for (auto pair : instructionsByAddr) {
-			instructions.push_back(pair.second);
+		for (auto& pair : instructionsByAddr) {
+			TraceInstruction instr = pair.second;
+			for (int i = 0; i < header.mem_region_count; i++) {
+				mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
+				// TODO: This ignores the grid_launch_id.
+				if (region->start <= instr.min && instr.max < region->start + region->size) {
+					instr.mem_region_id = region->mem_region_id;
+					break;
+				}
+			}
+			instructions.push_back(instr);
 		}
 
 		std::sort(instructions.begin(), instructions.end(), [] (const TraceInstruction& a, const TraceInstruction& b) {
@@ -547,7 +557,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 			}
 
 			float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-			if (ImGui::BeginTable("Instructions", 6, flags, ImVec2(0.0f, instructionsHeight))) {
+			if (ImGui::BeginTable("Instructions", 7, flags, ImVec2(0.0f, instructionsHeight))) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
@@ -555,6 +565,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
+
 				ImGui::TableHeadersRow();
 
 				ImGuiListClipper clipper;
@@ -583,6 +595,10 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGui::Text("0x%016lx", instr.min);
 						ImGui::TableNextColumn();
 						ImGui::Text("0x%016lx", instr.max);
+						ImGui::TableNextColumn();
+						if (instr.mem_region_id != UINT64_MAX) {
+							ImGui::Text("%d", instr.mem_region_id);
+						}
 					}
 				}
 				ImGui::EndTable();
