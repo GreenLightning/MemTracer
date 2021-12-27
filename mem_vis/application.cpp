@@ -216,17 +216,34 @@ struct Grid {
 
 						uint64_t offset = instr.addr - region->start;
 						char buffer[256];
-						if (instr.mem_region_id == 2) {
-							uint64_t floatIndex = offset / 4;
-							uint64_t aabbIndex = floatIndex / 6;
-							uint64_t subIndex = floatIndex % 6;
-							if (subIndex < 3) {
-								snprintf(buffer, sizeof(buffer), "bounds[%d].min[%d]", aabbIndex, subIndex);
-							} else {
-								snprintf(buffer, sizeof(buffer), "bounds[%d].max[%d]", aabbIndex, subIndex - 3);
+						switch (instr.mem_region_id) {
+							case 1: {
+								uint64_t nodeIndex = offset / 4;
+								snprintf(buffer, sizeof(buffer), "nodes[%d]", nodeIndex);
+								break;
 							}
-						} else {
-							snprintf(buffer, sizeof(buffer), "%d", offset);
+							case 2: {
+								uint64_t floatIndex = offset / 4;
+								uint64_t aabbIndex = floatIndex / 6;
+								uint64_t subIndex = floatIndex % 6;
+								if (subIndex < 3) {
+									snprintf(buffer, sizeof(buffer), "bounds[%d].min[%d]", aabbIndex, subIndex);
+								} else {
+									snprintf(buffer, sizeof(buffer), "bounds[%d].max[%d]", aabbIndex, subIndex - 3);
+								}
+								break;
+							}
+							case 3: {
+								uint64_t intIndex = offset / 4;
+								uint64_t faceIndex = intIndex / 3;
+								uint64_t subIndex = intIndex % 3;
+								snprintf(buffer, sizeof(buffer), "faces[%d].indices[%d]", faceIndex, subIndex);
+								break;
+							}
+							default: {
+								snprintf(buffer, sizeof(buffer), "%d bytes", offset);
+								break;
+							}
 						}
 						instr.info = std::string(buffer);
 						break;
