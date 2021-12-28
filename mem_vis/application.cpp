@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -19,6 +20,15 @@
 
 #include "application.hpp"
 
+struct ConsecutiveAccessAnalysis {
+	uint64_t grid_launch_id;
+	uint64_t mem_region_id;
+	mem_region_t* region;
+	uint64_t object_size;
+	uint64_t object_count;
+	std::vector<uint64_t> matrix;
+};
+
 struct TraceInstruction {
 	uint64_t    instr_addr;
 	std::string opcode;
@@ -35,6 +45,7 @@ struct Trace {
 	std::vector<std::string> strings;
 	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
+	ConsecutiveAccessAnalysis caa;
 
 	~Trace() {
 		mmap.unmap();
@@ -102,6 +113,8 @@ struct Trace {
 
 		// TODO: Validate other header fields.
 
+		// TRACE INSTRUCTIONS
+
 		for (int i = 0; i < header.mem_access_count; i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
 			auto count = instructionsByAddr.count(ma->instr_addr);
@@ -127,7 +140,7 @@ struct Trace {
 		}
 
 		for (auto& pair : instructionsByAddr) {
-			TraceInstruction instr = pair.second;
+			TraceInstruction& instr = pair.second;
 			for (int i = 0; i < header.mem_region_count; i++) {
 				mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
 				// TODO: This ignores the grid_launch_id.
@@ -136,12 +149,92 @@ struct Trace {
 					break;
 				}
 			}
-			instructions.push_back(instr);
+		}
+
+		for (auto& pair : instructionsByAddr) {
+			instructions.push_back(pair.second);
 		}
 
 		std::sort(instructions.begin(), instructions.end(), [] (const TraceInstruction& a, const TraceInstruction& b) {
 			return a.instr_addr < b.instr_addr;
 		});
+
+		// SORTING
+
+		auto t0 = std::chrono::high_resolution_clock::now();
+
+		std::vector<mem_access_t> accesses;
+		accesses.reserve(header.mem_access_count);
+		for (int i = 0; i < header.mem_access_count; i++) {
+			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
+			accesses.push_back(*ma);
+		}
+
+		auto t1 = std::chrono::high_resolution_clock::now();
+
+		std::stable_sort(accesses.begin(), accesses.end(), [] (const mem_access_t& a, const mem_access_t& b) {
+			if (a.grid_launch_id != b.grid_launch_id) return a.grid_launch_id < b.grid_launch_id;
+			if (a.block_idx_z != b.block_idx_z) return a.block_idx_z < b.block_idx_z;
+			if (a.block_idx_y != b.block_idx_y) return a.block_idx_y < b.block_idx_y;
+			if (a.block_idx_x != b.block_idx_x) return a.block_idx_x < b.block_idx_x;
+			if (a.local_warp_id != b.local_warp_id) return a.local_warp_id < b.local_warp_id;
+			return false;
+		});
+		
+		auto t2 = std::chrono::high_resolution_clock::now();
+
+		printf("copy: %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
+		printf("sort: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+
+		// ANALYSIS
+
+		caa.grid_launch_id = 0;
+		caa.mem_region_id = 1;
+		for (int i = 0; i < header.mem_region_count; i++) {
+			mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
+			if (region->grid_launch_id == caa.grid_launch_id && region->mem_region_id == caa.mem_region_id) {
+				caa.region = region;
+				break;
+			}
+		}
+		caa.object_size = 4;
+		caa.object_count = caa.region->size / caa.object_size;
+		caa.matrix.reserve(caa.object_count * caa.object_count);
+
+		int32_t last_block_idx_z = -1;
+		int32_t last_block_idx_y = -1;
+		int32_t last_block_idx_x = -1;
+		int32_t last_local_warp_id = -1;
+		int64_t last_access[32];
+
+		int i = 0;
+		while (i < accesses.size() && accesses[i].grid_launch_id != caa.grid_launch_id) i++;
+		for (; i < accesses.size(); i++) {
+			mem_access_t* ma = &accesses[i];
+			if (ma->grid_launch_id != caa.grid_launch_id) break;
+
+			if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+				last_block_idx_z = ma->block_idx_z;
+				last_block_idx_y = ma->block_idx_y;
+				last_block_idx_x = ma->block_idx_x;
+				last_local_warp_id = ma->local_warp_id;
+
+				for (int i = 0; i < 32; i++) {
+					last_access[i] = -1;
+				}
+			}
+
+			TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
+			if (instr.mem_region_id != caa.mem_region_id) continue;
+
+			for (int i = 0; i < 32; i++) {
+				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - caa.region->start) / caa.object_size;
+				if (last_access[i] >= 0 && access >= 0) {
+					caa.matrix[last_access[i] * caa.object_count + access]++;
+				}
+				last_access[i] = access;
+			}
+		}
 
 		return "";
 	}
@@ -693,6 +786,34 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		}
 	}
 	ImGui::End();
+
+	if (app.trace) {
+		ConsecutiveAccessAnalysis* caa = &app.trace->caa;
+		if (ImGui::Begin("Consecutive Access Analysis")) {
+			static int index = 0;
+			ImGui::InputInt("index", &index);
+
+			if (ImGui::BeginTable("Successors", 2, flags, ImVec2(0.0f, 200))) {
+				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
+				ImGui::TableHeadersRow();
+
+				for (int i = 0; i < caa->object_count; i++) {
+					auto count = caa->matrix[index * caa->object_count + i];
+					if (count != 0) {
+						ImGui::TableNextRow();
+						ImGui::TableNextColumn();
+						ImGui::Text("%d", i);
+						ImGui::TableNextColumn();
+						ImGui::Text("%d", count);
+					}
+				}
+				ImGui::EndTable();
+			}
+		}
+		ImGui::End();
+	}
 
 	if (app.demo) {
 		ImGui::ShowDemoWindow(&app.demo);
