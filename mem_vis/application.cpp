@@ -3,8 +3,10 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <imgui.h>
@@ -29,6 +31,19 @@ struct ConsecutiveAccessAnalysis {
 	std::vector<uint64_t> matrix;
 };
 
+struct RegionLinkAnalysis {
+	uint64_t grid_launch_id;
+	uint64_t region_id_a;
+	uint64_t region_id_b;
+	mem_region_t* region_a;
+	mem_region_t* region_b;
+	uint64_t object_size_a;
+	uint64_t object_size_b;
+	uint64_t object_count_a;
+	uint64_t object_count_b;
+	std::map<int64_t, std::set<int64_t>> links;
+};
+
 struct TraceInstruction {
 	uint64_t    instr_addr;
 	std::string opcode;
@@ -46,9 +61,20 @@ struct Trace {
 	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
 	ConsecutiveAccessAnalysis caa;
+	RegionLinkAnalysis rla;
 
 	~Trace() {
 		mmap.unmap();
+	}
+
+	mem_region_t* find_mem_region(uint64_t grid_launch_id, uint64_t mem_region_id) {
+		for (int i = 0; i < header.mem_region_count; i++) {
+			mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
+			if (region->grid_launch_id == grid_launch_id && region->mem_region_id == mem_region_id) {
+				return region;
+			}
+		}
+		return nullptr;
 	}
 
 	std::string load(std::string filename) {
@@ -188,51 +214,102 @@ struct Trace {
 
 		// ANALYSIS
 
-		caa.grid_launch_id = 0;
-		caa.mem_region_id = 1;
-		for (int i = 0; i < header.mem_region_count; i++) {
-			mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
-			if (region->grid_launch_id == caa.grid_launch_id && region->mem_region_id == caa.mem_region_id) {
-				caa.region = region;
-				break;
-			}
-		}
-		caa.object_size = 4;
-		caa.object_count = caa.region->size / caa.object_size;
-		caa.matrix.reserve(caa.object_count * caa.object_count);
+		{
+			caa.grid_launch_id = 0;
+			caa.mem_region_id = 1;
+			caa.region = find_mem_region(caa.grid_launch_id, caa.mem_region_id);
+			caa.object_size = 4;
+			caa.object_count = caa.region->size / caa.object_size;
+			caa.matrix.reserve(caa.object_count * caa.object_count);
 
-		int32_t last_block_idx_z = -1;
-		int32_t last_block_idx_y = -1;
-		int32_t last_block_idx_x = -1;
-		int32_t last_local_warp_id = -1;
-		int64_t last_access[32];
+			int32_t last_block_idx_z = -1;
+			int32_t last_block_idx_y = -1;
+			int32_t last_block_idx_x = -1;
+			int32_t last_local_warp_id = -1;
+			int64_t last_access[32];
 
-		int i = 0;
-		while (i < accesses.size() && accesses[i].grid_launch_id != caa.grid_launch_id) i++;
-		for (; i < accesses.size(); i++) {
-			mem_access_t* ma = &accesses[i];
-			if (ma->grid_launch_id != caa.grid_launch_id) break;
+			int i = 0;
+			while (i < accesses.size() && accesses[i].grid_launch_id != caa.grid_launch_id) i++;
+			for (; i < accesses.size(); i++) {
+				mem_access_t* ma = &accesses[i];
+				if (ma->grid_launch_id != caa.grid_launch_id) break;
 
-			if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
-				last_block_idx_z = ma->block_idx_z;
-				last_block_idx_y = ma->block_idx_y;
-				last_block_idx_x = ma->block_idx_x;
-				last_local_warp_id = ma->local_warp_id;
+				if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+					last_block_idx_z = ma->block_idx_z;
+					last_block_idx_y = ma->block_idx_y;
+					last_block_idx_x = ma->block_idx_x;
+					last_local_warp_id = ma->local_warp_id;
+
+					for (int i = 0; i < 32; i++) {
+						last_access[i] = -1;
+					}
+				}
+
+				TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
+				if (instr.mem_region_id != caa.mem_region_id) continue;
 
 				for (int i = 0; i < 32; i++) {
-					last_access[i] = -1;
+					int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - caa.region->start) / caa.object_size;
+					if (last_access[i] >= 0 && access >= 0) {
+						caa.matrix[last_access[i] * caa.object_count + access]++;
+					}
+					last_access[i] = access;
 				}
 			}
+		}
 
-			TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
-			if (instr.mem_region_id != caa.mem_region_id) continue;
+		{
+			rla.grid_launch_id = 0;
+			rla.region_id_a = 1;
+			rla.region_id_b = 3;
+			rla.region_a = find_mem_region(rla.grid_launch_id, rla.region_id_a);
+			rla.region_b = find_mem_region(rla.grid_launch_id, rla.region_id_b);
+			rla.object_size_a = 4;
+			rla.object_size_b = 12;
+			rla.object_count_a = rla.region_a->size / rla.object_size_a;
+			rla.object_count_b = rla.region_b->size / rla.object_size_b;
 
-			for (int i = 0; i < 32; i++) {
-				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - caa.region->start) / caa.object_size;
-				if (last_access[i] >= 0 && access >= 0) {
-					caa.matrix[last_access[i] * caa.object_count + access]++;
+			int32_t last_block_idx_z = -1;
+			int32_t last_block_idx_y = -1;
+			int32_t last_block_idx_x = -1;
+			int32_t last_local_warp_id = -1;
+			int64_t last_access[32];
+
+			int i = 0;
+			while (i < accesses.size() && accesses[i].grid_launch_id != rla.grid_launch_id) i++;
+			for (; i < accesses.size(); i++) {
+				mem_access_t* ma = &accesses[i];
+				if (ma->grid_launch_id != rla.grid_launch_id) break;
+
+				if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+					last_block_idx_z = ma->block_idx_z;
+					last_block_idx_y = ma->block_idx_y;
+					last_block_idx_x = ma->block_idx_x;
+					last_local_warp_id = ma->local_warp_id;
+
+					for (int i = 0; i < 32; i++) {
+						last_access[i] = -1;
+					}
 				}
-				last_access[i] = access;
+
+				TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
+				if (instr.mem_region_id == rla.region_id_a) {
+					for (int i = 0; i < 32; i++) {
+						last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - rla.region_a->start) / rla.object_size_a;
+					}
+				} else if (instr.mem_region_id == rla.region_id_b) {
+					for (int i = 0; i < 32; i++) {
+						int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - rla.region_b->start) / rla.object_size_b;
+						if (last_access[i] >= 0 && access >= 0) {
+							rla.links[last_access[i]].insert(access);
+						}
+						last_access[i] = -1;
+					}
+				} else if (instr.mem_region_id != UINT64_MAX) {
+					for (int i = 0; i < 32; i++) {
+						last_access[i] = -1;
+					}
+				}
 			}
 		}
 
@@ -793,7 +870,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 			static int index = 0;
 			ImGui::InputInt("index", &index);
 
-			if (ImGui::BeginTable("Successors", 2, flags, ImVec2(0.0f, 200))) {
+			if (ImGui::BeginTable("Successors", 2, flags)) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
@@ -809,6 +886,37 @@ void appRenderGui(GLFWwindow* window, float delta) {
 						ImGui::Text("%d", count);
 					}
 				}
+				ImGui::EndTable();
+			}
+		}
+		ImGui::End();
+
+		RegionLinkAnalysis* rla = &app.trace->rla;
+		if (ImGui::Begin("Region Link Analysis")) {
+			if (ImGui::BeginTable("Links", 2, flags)) {
+				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableSetupColumn("Index A", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Index B", ImGuiTableColumnFlags_None);
+				ImGui::TableHeadersRow();
+
+				for (auto& pair : rla->links) {
+					char buffer[256];
+					int pos = 0;
+
+					for (auto target : pair.second) {
+						const char* format = (pos == 0) ? "%d" : ", %d";
+						int written = snprintf(buffer+pos, sizeof(buffer)-pos, format, target);
+						pos += (written < 0) ? 0 : written;
+						if (written < 0 || pos >= sizeof(buffer)) break;
+					}
+
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", pair.first);
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", buffer);
+				}
+
 				ImGui::EndTable();
 			}
 		}
