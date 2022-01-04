@@ -274,6 +274,65 @@ void InstructionBasedSizeAnalysis::run(Trace* trace) {
 	}
 }
 
+struct LinearAccessAnalysis {
+	enum Flags : uint8_t {
+		ACCESSED = 0x01,
+		LINEAR   = 0x02,
+	};
+
+	uint64_t grid_launch_id;
+	uint64_t mem_region_id;
+	mem_region_t* region;
+	uint64_t object_size;
+	uint64_t object_count;
+	std::vector<uint8_t> flags;
+
+	void run(Trace* trace);
+	void renderGui(const char* title);
+};
+
+void LinearAccessAnalysis::run(Trace* trace) {
+	int32_t last_block_idx_z = -1;
+	int32_t last_block_idx_y = -1;
+	int32_t last_block_idx_x = -1;
+	int32_t last_local_warp_id = -1;
+	int64_t last_access[32];
+
+	this->flags.resize(this->object_count);
+
+	int i = 0;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	for (; i < trace->accesses.size(); i++) {
+		mem_access_t* ma = &trace->accesses[i];
+		if (ma->grid_launch_id != this->grid_launch_id) break;
+
+		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+			last_block_idx_z = ma->block_idx_z;
+			last_block_idx_y = ma->block_idx_y;
+			last_block_idx_x = ma->block_idx_x;
+			last_local_warp_id = ma->local_warp_id;
+
+			for (int i = 0; i < 32; i++) {
+				last_access[i] = -1;
+			}
+		}
+
+		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
+		if (instr.mem_region_id != this->mem_region_id) continue;
+
+		for (int i = 0; i < 32; i++) {
+			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->object_size;
+			if (access >= 0) {
+				this->flags[access] |= ACCESSED;
+				if (last_access[i] >= 0 && access == last_access[i] + 1) {
+					this->flags[access] |= LINEAR;
+				}
+			}
+			last_access[i] = access;
+		}
+	}
+}
+
 struct ConsecutiveAccessAnalysis {
 	uint64_t grid_launch_id;
 	uint64_t mem_region_id;
@@ -292,6 +351,8 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 	int32_t last_block_idx_x = -1;
 	int32_t last_local_warp_id = -1;
 	int64_t last_access[32];
+
+	matrix.resize(this->object_count * this->object_count);
 
 	int i = 0;
 	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
@@ -608,6 +669,7 @@ struct Workspace {
 	ConsecutiveAccessAnalysis caa;
 	RegionLinkAnalysis rla;
 	RegionLinkAnalysis rla2;
+	LinearAccessAnalysis laa;
 };
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
@@ -621,7 +683,6 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->caa.region = trace->find_mem_region(ws->caa.grid_launch_id, ws->caa.mem_region_id);
 	ws->caa.object_size = 4;
 	ws->caa.object_count = ws->caa.region->size / ws->caa.object_size;
-	ws->caa.matrix.reserve(ws->caa.object_count * ws->caa.object_count);
 	ws->caa.run(trace.get());
 
 	ws->rla.grid_launch_id = 0;
@@ -645,6 +706,13 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->rla2.object_count_a = ws->rla2.region_a->size / ws->rla2.object_size_a;
 	ws->rla2.object_count_b = ws->rla2.region_b->size / ws->rla2.object_size_b;
 	ws->rla2.run(trace.get());
+
+	ws->laa.grid_launch_id = 0;
+	ws->laa.mem_region_id = 3;
+	ws->laa.region = trace->find_mem_region(ws->laa.grid_launch_id, ws->laa.mem_region_id);
+	ws->laa.object_size = 12;
+	ws->laa.object_count = ws->laa.region->size / ws->laa.object_size;
+	ws->laa.run(trace.get());
 
 	ws->trace = std::move(trace);
 	return ws;
@@ -973,6 +1041,38 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
+void LinearAccessAnalysis::renderGui(const char* title) {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title)) {
+		ImGui::Text("Region: %llu", this->mem_region_id);
+		ImGui::Text("Objects: %llu * %llu bytes", this->object_count, this->object_size);
+
+		if (ImGui::BeginTable("Stats", 3, flags)) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Accessed", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Linear", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			for (int i = 0; i < this->flags.size(); i++) {
+				uint8_t flags = this->flags[i];
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", i);
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", (flags & ACCESSED) ? "x" : "");
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", (flags & LINEAR) ? "x" : "");
+			}
+			ImGui::EndTable();
+		}
+	}
+	ImGui::End();
+}
+
 void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
@@ -1094,6 +1194,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		app.workspace->caa.renderGui("Consecutive Access Analysis");
 		app.workspace->rla.renderGui("Region Link Analysis - Nodes - Indices");
 		app.workspace->rla2.renderGui("Region Link Analysis - Nodes - Bounds");
+		app.workspace->laa.renderGui("Linear Access Analysis");
 	}
 
 	if (app.demo) {
