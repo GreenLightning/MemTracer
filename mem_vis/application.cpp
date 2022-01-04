@@ -23,6 +23,7 @@
 #include "application.hpp"
 
 struct TraceInstruction {
+	uint64_t    index;
 	uint64_t    instr_addr;
 	std::string opcode;
 	uint64_t    count = 0;
@@ -164,6 +165,11 @@ struct Trace {
 			return a.instr_addr < b.instr_addr;
 		});
 
+		for (uint64_t i = 0; i < instructions.size(); i++) {
+			instructions[i].index = i;
+			instructionsByAddr[instructions[i].instr_addr].index = i;
+		}
+
 		// SORTING
 
 		auto t0 = std::chrono::high_resolution_clock::now();
@@ -193,6 +199,80 @@ struct Trace {
 		return "";
 	}
 };
+
+struct InstructionBasedSizeAnalysis {
+	struct Info {
+		uint64_t instr_index;
+		uint64_t instr_addr;
+		uint64_t mem_region_id;
+		uint64_t estimate;
+	};
+
+	uint64_t grid_launch_id;
+	std::vector<Info> infos;
+
+	void run(Trace* trace);
+	void renderGui(const char* title);
+};
+
+uint64_t gcd(uint64_t a, uint64_t b) {
+	if (b == 0) return a;
+	return gcd(b, a % b);
+}
+
+void InstructionBasedSizeAnalysis::run(Trace* trace) {
+	int32_t last_block_idx_z = -1;
+	int32_t last_block_idx_y = -1;
+	int32_t last_block_idx_x = -1;
+	int32_t last_local_warp_id = -1;
+
+	std::vector<uint64_t> estimates;
+	estimates.resize(trace->instructions.size());
+	std::vector<uint64_t> last_addresses;
+	last_addresses.resize(trace->instructions.size() * 32);
+
+	int i = 0;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	for (; i < trace->accesses.size(); i++) {
+		mem_access_t* ma = &trace->accesses[i];
+		if (ma->grid_launch_id != this->grid_launch_id) break;
+
+		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+			last_block_idx_z = ma->block_idx_z;
+			last_block_idx_y = ma->block_idx_y;
+			last_block_idx_x = ma->block_idx_x;
+			last_local_warp_id = ma->local_warp_id;
+
+			for (int j = 0; j < last_addresses.size(); j++) {
+				last_addresses[j] = 0;
+			}
+		}
+
+		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
+		if (instr.mem_region_id == UINT64_MAX) continue;
+
+		uint64_t* last_addrs = &last_addresses[instr.index * 32];
+		for (int j = 0; j < 32; j++) {
+			if (last_addrs[j] != 0 && ma->addrs[j] != 0) {
+				uint64_t diff = (ma->addrs[j] > last_addrs[j]) ? (ma->addrs[j] - last_addrs[j]) : (last_addrs[j] - ma->addrs[j]);
+				estimates[instr.index] = gcd(estimates[instr.index], diff);
+			}
+			last_addrs[j] = ma->addrs[j];
+		}
+	}
+
+	for (int i = 0; i < estimates.size(); i++) {
+		TraceInstruction& instr = trace->instructions[i];
+		if (estimates[i] != 0) {
+			Info info = {};
+			info.instr_index = instr.index;
+			info.instr_addr = instr.instr_addr;
+			info.mem_region_id = instr.mem_region_id;
+			info.estimate = estimates[i];
+			infos.push_back(info);
+		}
+	}
+}
 
 struct ConsecutiveAccessAnalysis {
 	uint64_t grid_launch_id;
@@ -524,6 +604,7 @@ struct Grid {
 
 struct Workspace {
 	std::unique_ptr<Trace> trace;
+	InstructionBasedSizeAnalysis ibsa;
 	ConsecutiveAccessAnalysis caa;
 	RegionLinkAnalysis rla;
 	RegionLinkAnalysis rla2;
@@ -531,6 +612,9 @@ struct Workspace {
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
+
+	ws->ibsa.grid_launch_id = 0;
+	ws->ibsa.run(trace.get());
 
 	ws->caa.grid_launch_id = 0;
 	ws->caa.mem_region_id = 1;
@@ -861,6 +945,34 @@ void Grid::renderGui() {
 	ImGui::End();
 }
 
+void InstructionBasedSizeAnalysis::renderGui(const char* title) {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title)) {
+		if (ImGui::BeginTable("Estimates", 3, flags)) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Inst. Index", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			for (auto& info : this->infos) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", info.instr_index);
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", info.mem_region_id);
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", info.estimate);
+			}	
+			ImGui::EndTable();
+		}
+	}
+	ImGui::End();
+}
+
 void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
@@ -978,6 +1090,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	app.grid.renderGui();
 
 	if (app.workspace) {
+		app.workspace->ibsa.renderGui("Instruction Based Size Analysis");
 		app.workspace->caa.renderGui("Consecutive Access Analysis");
 		app.workspace->rla.renderGui("Region Link Analysis - Nodes - Indices");
 		app.workspace->rla2.renderGui("Region Link Analysis - Nodes - Bounds");
