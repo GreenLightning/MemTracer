@@ -22,34 +22,6 @@
 
 #include "application.hpp"
 
-struct Trace;
-
-struct ConsecutiveAccessAnalysis {
-	uint64_t grid_launch_id;
-	uint64_t mem_region_id;
-	mem_region_t* region;
-	uint64_t object_size;
-	uint64_t object_count;
-	std::vector<uint64_t> matrix;
-
-	void run(Trace* trace);
-};
-
-struct RegionLinkAnalysis {
-	uint64_t grid_launch_id;
-	uint64_t region_id_a;
-	uint64_t region_id_b;
-	mem_region_t* region_a;
-	mem_region_t* region_b;
-	uint64_t object_size_a;
-	uint64_t object_size_b;
-	uint64_t object_count_a;
-	uint64_t object_count_b;
-	std::map<int64_t, std::set<int64_t>> links;
-
-	void run(Trace* trace);
-};
-
 struct TraceInstruction {
 	uint64_t    instr_addr;
 	std::string opcode;
@@ -67,13 +39,12 @@ struct Trace {
 	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
 	std::vector<mem_access_t> accesses;
-	ConsecutiveAccessAnalysis caa;
-	RegionLinkAnalysis rla;
-	RegionLinkAnalysis rla2;
 
 	~Trace() {
 		mmap.unmap();
 	}
+
+	void renderGuiInWindow();
 
 	mem_region_t* find_mem_region(uint64_t grid_launch_id, uint64_t mem_region_id) {
 		for (int i = 0; i < header.mem_region_count; i++) {
@@ -219,40 +190,20 @@ struct Trace {
 		printf("copy: %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
 		printf("sort: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
 
-		// ANALYSIS
-
-		caa.grid_launch_id = 0;
-		caa.mem_region_id = 1;
-		caa.region = find_mem_region(caa.grid_launch_id, caa.mem_region_id);
-		caa.object_size = 4;
-		caa.object_count = caa.region->size / caa.object_size;
-		caa.matrix.reserve(caa.object_count * caa.object_count);
-		caa.run(this);
-
-		rla.grid_launch_id = 0;
-		rla.region_id_a = 1;
-		rla.region_id_b = 3;
-		rla.region_a = find_mem_region(rla.grid_launch_id, rla.region_id_a);
-		rla.region_b = find_mem_region(rla.grid_launch_id, rla.region_id_b);
-		rla.object_size_a = 4;
-		rla.object_size_b = 12;
-		rla.object_count_a = rla.region_a->size / rla.object_size_a;
-		rla.object_count_b = rla.region_b->size / rla.object_size_b;
-		rla.run(this);
-
-		rla2.grid_launch_id = 0;
-		rla2.region_id_a = 1;
-		rla2.region_id_b = 2;
-		rla2.region_a = find_mem_region(rla2.grid_launch_id, rla2.region_id_a);
-		rla2.region_b = find_mem_region(rla2.grid_launch_id, rla2.region_id_b);
-		rla2.object_size_a = 4;
-		rla2.object_size_b = 6 * 4;
-		rla2.object_count_a = rla2.region_a->size / rla2.object_size_a;
-		rla2.object_count_b = rla2.region_b->size / rla2.object_size_b;
-		rla2.run(this);
-
 		return "";
 	}
+};
+
+struct ConsecutiveAccessAnalysis {
+	uint64_t grid_launch_id;
+	uint64_t mem_region_id;
+	mem_region_t* region;
+	uint64_t object_size;
+	uint64_t object_count;
+	std::vector<uint64_t> matrix;
+
+	void run(Trace* trace);
+	void renderGui(const char* title);
 };
 
 void ConsecutiveAccessAnalysis::run(Trace* trace) {
@@ -291,6 +242,22 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 		}
 	}
 }
+
+struct RegionLinkAnalysis {
+	uint64_t grid_launch_id;
+	uint64_t region_id_a;
+	uint64_t region_id_b;
+	mem_region_t* region_a;
+	mem_region_t* region_b;
+	uint64_t object_size_a;
+	uint64_t object_size_b;
+	uint64_t object_count_a;
+	uint64_t object_count_b;
+	std::map<int64_t, std::set<int64_t>> links;
+
+	void run(Trace* trace);
+	void renderGui(const char* title);
+};
 
 void RegionLinkAnalysis::run(Trace* trace) {
 	int32_t last_block_idx_z = -1;
@@ -361,6 +328,8 @@ struct Grid {
 	int imageWidth, imageHeight;
 
 	GLuint texture = 0;
+
+	void renderGui();
 
 	void update(Trace* trace, uint64_t grid_launch_id) {
 		if (cached_trace == trace && cached_grid_launch_id == grid_launch_id && cached_target_x == targetX && cached_target_y == targetY) return;
@@ -553,13 +522,57 @@ struct Grid {
 	}
 };
 
+struct Workspace {
+	std::unique_ptr<Trace> trace;
+	ConsecutiveAccessAnalysis caa;
+	RegionLinkAnalysis rla;
+	RegionLinkAnalysis rla2;
+};
+
+std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
+	auto ws = std::make_unique<Workspace>();
+
+	ws->caa.grid_launch_id = 0;
+	ws->caa.mem_region_id = 1;
+	ws->caa.region = trace->find_mem_region(ws->caa.grid_launch_id, ws->caa.mem_region_id);
+	ws->caa.object_size = 4;
+	ws->caa.object_count = ws->caa.region->size / ws->caa.object_size;
+	ws->caa.matrix.reserve(ws->caa.object_count * ws->caa.object_count);
+	ws->caa.run(trace.get());
+
+	ws->rla.grid_launch_id = 0;
+	ws->rla.region_id_a = 1;
+	ws->rla.region_id_b = 3;
+	ws->rla.region_a = trace->find_mem_region(ws->rla.grid_launch_id, ws->rla.region_id_a);
+	ws->rla.region_b = trace->find_mem_region(ws->rla.grid_launch_id, ws->rla.region_id_b);
+	ws->rla.object_size_a = 4;
+	ws->rla.object_size_b = 12;
+	ws->rla.object_count_a = ws->rla.region_a->size / ws->rla.object_size_a;
+	ws->rla.object_count_b = ws->rla.region_b->size / ws->rla.object_size_b;
+	ws->rla.run(trace.get());
+
+	ws->rla2.grid_launch_id = 0;
+	ws->rla2.region_id_a = 1;
+	ws->rla2.region_id_b = 2;
+	ws->rla2.region_a = trace->find_mem_region(ws->rla2.grid_launch_id, ws->rla2.region_id_a);
+	ws->rla2.region_b = trace->find_mem_region(ws->rla2.grid_launch_id, ws->rla2.region_id_b);
+	ws->rla2.object_size_a = 4;
+	ws->rla2.object_size_b = 6 * 4;
+	ws->rla2.object_count_a = ws->rla2.region_a->size / ws->rla2.object_size_a;
+	ws->rla2.object_count_b = ws->rla2.region_b->size / ws->rla2.object_size_b;
+	ws->rla2.run(trace.get());
+
+	ws->trace = std::move(trace);
+	return ws;
+}
+
 struct Application {
 	int width, height;
 	bool demo = false;
 	uint64_t selected_instr_addr    = UINT64_MAX;
 	uint64_t selected_mem_region_id = UINT64_MAX;
 
-	std::unique_ptr<Trace> trace;
+	std::unique_ptr<Workspace> workspace;
 	Grid grid;
 	std::string status;
 };
@@ -582,7 +595,7 @@ void appInitialize(GLFWwindow* window, int argc, char* argv[]) {
 			fprintf(stderr, "failed to load %s: %s\n", trace->filename.c_str(), error.c_str());
 			exit(1);
 		}
-		app.trace = std::move(trace);
+		app.workspace = buildWorkspace(std::move(trace));
 	}
 }
 
@@ -603,12 +616,12 @@ void appDropCallback(GLFWwindow* window, int count, const char** paths) {
 	if (count >= 1) {
 		auto trace = std::make_unique<Trace>();
 		std::string error = trace->load(paths[count-1]);
-		if (error.empty()) {
-			app.trace = std::move(trace);
-			app.status = "";
-		} else {
-			app.status = "Failed to load " + trace->filename + ": " + error;			
+		if (!error.empty()) {
+			app.status = "Failed to load " + trace->filename + ": " + error;
+			return;
 		}
+		app.workspace = buildWorkspace(std::move(trace));
+		app.status = "Loaded " + app.workspace->trace->filename;
 	}
 }
 
@@ -629,6 +642,291 @@ void appRender(GLFWwindow* window, float delta) {
 	GL_CHECK();
 }
 
+void Trace::renderGuiInWindow() {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::Text("Filename: %s", this->filename.c_str());
+
+	meow_u128 hash;
+	memcpy(&hash, &this->header.hash, 128 / 8);
+	ImGui::Text("Hash: %08X-%08X-%08X-%08X", MeowU32From(hash, 3), MeowU32From(hash, 2), MeowU32From(hash, 1), MeowU32From(hash, 0));
+
+	float infosHeight = min((this->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200);
+	if (ImGui::BeginTable("Launch Infos", 3, flags, ImVec2(0.0f, infosHeight))) {
+		ImGui::TableSetupScrollFreeze(0, 1);
+		ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Grid Size", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Block Size", ImGuiTableColumnFlags_None);
+		ImGui::TableHeadersRow();
+
+		ImGuiListClipper clipper;
+		clipper.Begin(this->header.launch_info_count);
+		while (clipper.Step()) {
+			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+				launch_info_t* info = (launch_info_t*) &this->mmap[this->header.launch_info_offset + row * this->header.launch_info_size];
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", info->grid_launch_id);
+				ImGui::TableNextColumn();
+				ImGui::Text("%d,%d,%d", info->grid_dim_x, info->grid_dim_y, info->grid_dim_z);
+				ImGui::TableNextColumn();
+				ImGui::Text("%d,%d,%d", info->block_dim_x, info->block_dim_y, info->block_dim_z);
+			}
+		}
+		ImGui::EndTable();
+	}
+
+	float regionsHeight = min((this->header.mem_region_count + 2) * ImGui::GetFrameHeight(), 200);
+	if (ImGui::BeginTable("Memory Regions", 6, flags, ImVec2(0.0f, regionsHeight))) {
+		ImGui::TableSetupScrollFreeze(0, 1);
+		ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Region ID", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
+		ImGui::TableHeadersRow();
+
+		ImGuiListClipper clipper;
+		clipper.Begin(this->header.mem_region_count);
+		while (clipper.Step()) {
+			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+				mem_region_t* region = (mem_region_t*) &this->mmap[this->header.mem_region_offset + row * this->header.mem_region_size];
+				
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", region->grid_launch_id);
+				ImGui::TableNextColumn();
+
+				char label[32];
+				snprintf(label, sizeof(label), "%d", region->mem_region_id);
+				ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+				if (ImGui::Selectable(label, app.selected_mem_region_id == region->mem_region_id, selectable_flags)) {
+					app.selected_instr_addr = UINT64_MAX;
+					app.selected_mem_region_id = region->mem_region_id;
+				}
+
+				ImGui::TableNextColumn();
+				ImGui::Text("0x%016lx", region->start);
+				ImGui::TableNextColumn();
+				ImGui::Text("0x%016lx", region->start + region->size);
+				ImGui::TableNextColumn();
+				ImGui::Text("0x%016lx", region->size);
+				ImGui::TableNextColumn();
+				ImGui::Text("%ld", region->size);
+			}
+		}
+		ImGui::EndTable();
+	}
+
+	float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+	if (ImGui::BeginTable("Instructions", 7, flags, ImVec2(0.0f, instructionsHeight))) {
+		ImGui::TableSetupScrollFreeze(0, 1);
+		ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
+
+		ImGui::TableHeadersRow();
+
+		ImGuiListClipper clipper;
+		clipper.Begin(this->instructions.size());
+		while (clipper.Step()) {
+			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+				TraceInstruction& instr = this->instructions[row];
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				char label[32];
+				snprintf(label, sizeof(label), "%d", row);
+				ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+				if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
+					app.selected_instr_addr = instr.instr_addr;
+					app.selected_mem_region_id = UINT64_MAX;
+				}
+
+				ImGui::TableNextColumn();
+				ImGui::Text("0x%016lx", instr.instr_addr);
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", instr.opcode.c_str());
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", instr.count);
+				ImGui::TableNextColumn();
+				ImGui::Text("0x%016lx", instr.min);
+				ImGui::TableNextColumn();
+				ImGui::Text("0x%016lx", instr.max);
+				ImGui::TableNextColumn();
+				if (instr.mem_region_id != UINT64_MAX) {
+					ImGui::Text("%d", instr.mem_region_id);
+				}
+			}
+		}
+		ImGui::EndTable();
+	}
+}
+
+void Grid::renderGui() {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin("Grid")) {
+		ImGui::InputInt("x", &this->targetX);
+		ImGui::InputInt("y", &this->targetY);
+
+		ImVec2 mousePos = ImGui::GetMousePos();
+		ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+		int x = mousePos.x - cursorPos.x;
+		int y = mousePos.y - cursorPos.y;
+
+		ImRect bb(cursorPos, ImVec2(cursorPos.x + this->imageWidth, cursorPos.y + this->imageHeight));
+		ImGuiID id = ImGui::GetID("Texture");
+		if (ImGui::ButtonBehavior(bb, id, nullptr, nullptr, ImGuiButtonFlags_PressedOnClickRelease)) {
+			this->targetX = x / this->scale;
+			this->targetY = y / this->scale;
+		}
+
+		Trace* trace = app.workspace ? app.workspace->trace.get() : nullptr;
+		this->update(trace, 0);
+
+		ImGui::Image((void*)(intptr_t)this->texture, ImVec2(this->imageWidth, this->imageHeight));
+
+		if (x >= 0 && x < this->imageWidth && y >= 0 && y < this->imageHeight) {
+			ImGui::Text("%d, %d", x, y);
+		} else {
+			ImGui::Text("-");
+		}
+	}
+	ImGui::End();
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin("Grid Instructions")) {
+		ImGui::Text("Count: %d", this->instructions.size());
+
+		float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+		if (ImGui::BeginTable("Instructions", 6, flags, ImVec2(0.0f, instructionsHeight))) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			ImGuiListClipper clipper;
+			clipper.Begin(this->instructions.size());
+			while (clipper.Step()) {
+				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+					GridInstruction& instr = this->instructions[row];
+
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					char label[32];
+					snprintf(label, sizeof(label), "%d", row);
+					ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+					bool selected = app.selected_instr_addr == instr.instr_addr ||
+						(app.selected_instr_addr == UINT64_MAX && app.selected_mem_region_id != UINT64_MAX && app.selected_mem_region_id == instr.mem_region_id);
+					if (ImGui::Selectable(label, selected, selectable_flags)) {
+						app.selected_instr_addr = instr.instr_addr;
+						app.selected_mem_region_id = instr.mem_region_id;
+					}
+
+					ImGui::TableNextColumn();
+					if (row > 0 && instr.instr_addr <= this->instructions[row-1].instr_addr) {
+						ImGui::TextColored(ImVec4{1, 0.5, 0.5, 1}, "0x%016lx", instr.instr_addr);
+					} else {
+						ImGui::Text("0x%016lx", instr.instr_addr);
+					}
+				
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", instr.opcode.c_str());
+					ImGui::TableNextColumn();
+					ImGui::Text("0x%016lx", instr.addr);
+					ImGui::TableNextColumn();
+					if (instr.mem_region_id != UINT64_MAX) {
+						ImGui::Text("%d", instr.mem_region_id);
+					}
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", instr.info.c_str());
+				}
+			}
+			ImGui::EndTable();
+		}
+	}
+	ImGui::End();
+}
+
+void ConsecutiveAccessAnalysis::renderGui(const char* title) {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title)) {
+		static int index = 0;
+		ImGui::InputInt("index", &index);
+
+		if (ImGui::BeginTable("Successors", 2, flags)) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			for (int i = 0; i < this->object_count; i++) {
+				auto count = this->matrix[index * this->object_count + i];
+				if (count != 0) {
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", i);
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", count);
+				}
+			}
+			ImGui::EndTable();
+		}
+	}
+	ImGui::End();
+}
+
+void RegionLinkAnalysis::renderGui(const char* title) {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title)) {
+		if (ImGui::BeginTable("Links", 2, flags)) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Index A", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Index B", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			for (auto& pair : this->links) {
+				char buffer[256];
+				int pos = 0;
+
+				for (auto target : pair.second) {
+					const char* format = (pos == 0) ? "%d" : ", %d";
+					int written = snprintf(buffer+pos, sizeof(buffer)-pos, format, target);
+					pos += (written < 0) ? 0 : written;
+					if (written < 0 || pos >= sizeof(buffer)) break;
+				}
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", pair.first);
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", buffer);
+			}
+
+			ImGui::EndTable();
+		}
+	}
+	ImGui::End();
+}
 
 bool BeginMainStatusBar() {
 	ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar;
@@ -666,281 +964,23 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
 	if (ImGui::Begin("Trace")) {
-		if (app.trace) {
-			auto& trace = app.trace;
-
-			ImGui::Text("Filename: %s", trace->filename.c_str());
-
-			meow_u128 hash;
-			memcpy(&hash, &trace->header.hash, 128 / 8);
-			ImGui::Text("Hash: %08X-%08X-%08X-%08X", MeowU32From(hash, 3), MeowU32From(hash, 2), MeowU32From(hash, 1), MeowU32From(hash, 0));
-
-			ImGui::Text("Instructions");
-
-			float infosHeight = min((trace->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200);
-			if (ImGui::BeginTable("Launch Infos", 3, flags, ImVec2(0.0f, infosHeight))) {
-				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Grid Size", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Block Size", ImGuiTableColumnFlags_None);
-				ImGui::TableHeadersRow();
-
-				ImGuiListClipper clipper;
-				clipper.Begin(trace->header.launch_info_count);
-				while (clipper.Step()) {
-					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-						launch_info_t* info = (launch_info_t*) &trace->mmap[trace->header.launch_info_offset + row * trace->header.launch_info_size];
-						ImGui::TableNextRow();
-						ImGui::TableNextColumn();
-						ImGui::Text("%d", info->grid_launch_id);
-						ImGui::TableNextColumn();
-						ImGui::Text("%d,%d,%d", info->grid_dim_x, info->grid_dim_y, info->grid_dim_z);
-						ImGui::TableNextColumn();
-						ImGui::Text("%d,%d,%d", info->block_dim_x, info->block_dim_y, info->block_dim_z);
-					}
-				}
-				ImGui::EndTable();
-			}
-
-			float regionsHeight = min((trace->header.mem_region_count + 2) * ImGui::GetFrameHeight(), 200);
-			if (ImGui::BeginTable("Memory Regions", 6, flags, ImVec2(0.0f, regionsHeight))) {
-				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Region ID", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
-				ImGui::TableHeadersRow();
-
-				ImGuiListClipper clipper;
-				clipper.Begin(trace->header.mem_region_count);
-				while (clipper.Step()) {
-					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-						mem_region_t* region = (mem_region_t*) &trace->mmap[trace->header.mem_region_offset + row * trace->header.mem_region_size];
-						
-						ImGui::TableNextRow();
-						ImGui::TableNextColumn();
-						ImGui::Text("%d", region->grid_launch_id);
-						ImGui::TableNextColumn();
-
-						char label[32];
-						snprintf(label, sizeof(label), "%d", region->mem_region_id);
-						ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
-						if (ImGui::Selectable(label, app.selected_mem_region_id == region->mem_region_id, selectable_flags)) {
-							app.selected_instr_addr = UINT64_MAX;
-							app.selected_mem_region_id = region->mem_region_id;
-						}
-
-						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", region->start);
-						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", region->start + region->size);
-						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", region->size);
-						ImGui::TableNextColumn();
-						ImGui::Text("%ld", region->size);
-					}
-				}
-				ImGui::EndTable();
-			}
-
-			float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-			if (ImGui::BeginTable("Instructions", 7, flags, ImVec2(0.0f, instructionsHeight))) {
-				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
-
-				ImGui::TableHeadersRow();
-
-				ImGuiListClipper clipper;
-				clipper.Begin(trace->instructions.size());
-				while (clipper.Step()) {
-					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-						TraceInstruction& instr = trace->instructions[row];
-
-						ImGui::TableNextRow();
-						ImGui::TableNextColumn();
-						char label[32];
-						snprintf(label, sizeof(label), "%d", row);
-						ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
-						if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
-							app.selected_instr_addr = instr.instr_addr;
-							app.selected_mem_region_id = UINT64_MAX;
-						}
-
-						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", instr.instr_addr);
-						ImGui::TableNextColumn();
-						ImGui::Text("%s", instr.opcode.c_str());
-						ImGui::TableNextColumn();
-						ImGui::Text("%d", instr.count);
-						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", instr.min);
-						ImGui::TableNextColumn();
-						ImGui::Text("0x%016lx", instr.max);
-						ImGui::TableNextColumn();
-						if (instr.mem_region_id != UINT64_MAX) {
-							ImGui::Text("%d", instr.mem_region_id);
-						}
-					}
-				}
-				ImGui::EndTable();
-			}
-
+		if (app.workspace) {
+			app.workspace->trace->renderGuiInWindow();
 		} else {
 			ImGui::Text("Drag and drop a file over this window to open it.");
 		}
 	}
 	ImGui::End();
 
-	if (ImGui::Begin("Grid")) {
-		ImGui::InputInt("x", &app.grid.targetX);
-		ImGui::InputInt("y", &app.grid.targetY);
+	app.grid.renderGui();
 
-		ImVec2 mousePos = ImGui::GetMousePos();
-		ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-		int x = mousePos.x - cursorPos.x;
-		int y = mousePos.y - cursorPos.y;
-
-		ImRect bb(cursorPos, ImVec2(cursorPos.x + app.grid.imageWidth, cursorPos.y + app.grid.imageHeight));
-		ImGuiID id = ImGui::GetID("Texture");
-		if (ImGui::ButtonBehavior(bb, id, nullptr, nullptr, ImGuiButtonFlags_PressedOnClickRelease)) {
-			app.grid.targetX = x / app.grid.scale;
-			app.grid.targetY = y / app.grid.scale;
-		}
-
-		app.grid.update(app.trace.get(), 0);
-
-		ImGui::Image((void*)(intptr_t)app.grid.texture, ImVec2(app.grid.imageWidth, app.grid.imageHeight));
-
-		if (x >= 0 && x < app.grid.imageWidth && y >= 0 && y < app.grid.imageHeight) {
-			ImGui::Text("%d, %d", x, y);
-		} else {
-			ImGui::Text("-");
-		}
-	}
-	ImGui::End();
-
-	if (ImGui::Begin("Grid Instructions")) {
-		ImGui::Text("Count: %d", app.grid.instructions.size());
-
-		float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-		if (ImGui::BeginTable("Instructions", 6, flags, ImVec2(0.0f, instructionsHeight))) {
-			ImGui::TableSetupScrollFreeze(0, 1);
-			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
-			ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
-			ImGui::TableSetupColumn("Opcode", ImGuiTableColumnFlags_None);
-			ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_None);
-			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
-			ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
-			ImGui::TableHeadersRow();
-
-			ImGuiListClipper clipper;
-			clipper.Begin(app.grid.instructions.size());
-			while (clipper.Step()) {
-				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-					GridInstruction& instr = app.grid.instructions[row];
-
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					char label[32];
-					snprintf(label, sizeof(label), "%d", row);
-					ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
-					bool selected = app.selected_instr_addr == instr.instr_addr ||
-						(app.selected_instr_addr == UINT64_MAX && app.selected_mem_region_id != UINT64_MAX && app.selected_mem_region_id == instr.mem_region_id);
-					if (ImGui::Selectable(label, selected, selectable_flags)) {
-						app.selected_instr_addr = instr.instr_addr;
-						app.selected_mem_region_id = instr.mem_region_id;
-					}
-
-					ImGui::TableNextColumn();
-					if (row > 0 && instr.instr_addr <= app.grid.instructions[row-1].instr_addr) {
-						ImGui::TextColored(ImVec4{1, 0.5, 0.5, 1}, "0x%016lx", instr.instr_addr);
-					} else {
-						ImGui::Text("0x%016lx", instr.instr_addr);
-					}
-				
-					ImGui::TableNextColumn();
-					ImGui::Text("%s", instr.opcode.c_str());
-					ImGui::TableNextColumn();
-					ImGui::Text("0x%016lx", instr.addr);
-					ImGui::TableNextColumn();
-					if (instr.mem_region_id != UINT64_MAX) {
-						ImGui::Text("%d", instr.mem_region_id);
-					}
-					ImGui::TableNextColumn();
-					ImGui::Text("%s", instr.info.c_str());
-				}
-			}
-			ImGui::EndTable();
-		}
-	}
-	ImGui::End();
-
-	if (app.trace) {
-		ConsecutiveAccessAnalysis* caa = &app.trace->caa;
-		if (ImGui::Begin("Consecutive Access Analysis")) {
-			static int index = 0;
-			ImGui::InputInt("index", &index);
-
-			if (ImGui::BeginTable("Successors", 2, flags)) {
-				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
-				ImGui::TableHeadersRow();
-
-				for (int i = 0; i < caa->object_count; i++) {
-					auto count = caa->matrix[index * caa->object_count + i];
-					if (count != 0) {
-						ImGui::TableNextRow();
-						ImGui::TableNextColumn();
-						ImGui::Text("%d", i);
-						ImGui::TableNextColumn();
-						ImGui::Text("%d", count);
-					}
-				}
-				ImGui::EndTable();
-			}
-		}
-		ImGui::End();
-
-		RegionLinkAnalysis* rla = &app.trace->rla;
-		if (ImGui::Begin("Region Link Analysis")) {
-			if (ImGui::BeginTable("Links", 2, flags)) {
-				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Index A", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Index B", ImGuiTableColumnFlags_None);
-				ImGui::TableHeadersRow();
-
-				for (auto& pair : rla->links) {
-					char buffer[256];
-					int pos = 0;
-
-					for (auto target : pair.second) {
-						const char* format = (pos == 0) ? "%d" : ", %d";
-						int written = snprintf(buffer+pos, sizeof(buffer)-pos, format, target);
-						pos += (written < 0) ? 0 : written;
-						if (written < 0 || pos >= sizeof(buffer)) break;
-					}
-
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Text("%d", pair.first);
-					ImGui::TableNextColumn();
-					ImGui::Text("%s", buffer);
-				}
-
-				ImGui::EndTable();
-			}
-		}
-		ImGui::End();
+	if (app.workspace) {
+		app.workspace->caa.renderGui("Consecutive Access Analysis");
+		app.workspace->rla.renderGui("Region Link Analysis - Nodes - Indices");
+		app.workspace->rla2.renderGui("Region Link Analysis - Nodes - Bounds");
 	}
 
 	if (app.demo) {
