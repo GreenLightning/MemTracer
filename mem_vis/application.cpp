@@ -388,7 +388,7 @@ struct Grid {
 						switch (instr.mem_region_id) {
 							case 1: {
 								uint64_t nodeIndex = offset / 4;
-								snprintf(buffer, sizeof(buffer), "nodes[%d]", nodeIndex);
+								snprintf(buffer, sizeof(buffer), "nodes[%llu]", nodeIndex);
 								break;
 							}
 							case 2: {
@@ -396,9 +396,9 @@ struct Grid {
 								uint64_t aabbIndex = floatIndex / 6;
 								uint64_t subIndex = floatIndex % 6;
 								if (subIndex < 3) {
-									snprintf(buffer, sizeof(buffer), "bounds[%d].min[%d]", aabbIndex, subIndex);
+									snprintf(buffer, sizeof(buffer), "bounds[%llu].min[%llu]", aabbIndex, subIndex);
 								} else {
-									snprintf(buffer, sizeof(buffer), "bounds[%d].max[%d]", aabbIndex, subIndex - 3);
+									snprintf(buffer, sizeof(buffer), "bounds[%llu].max[%llu]", aabbIndex, subIndex - 3);
 								}
 								break;
 							}
@@ -406,11 +406,11 @@ struct Grid {
 								uint64_t intIndex = offset / 4;
 								uint64_t faceIndex = intIndex / 3;
 								uint64_t subIndex = intIndex % 3;
-								snprintf(buffer, sizeof(buffer), "faces[%d].indices[%d]", faceIndex, subIndex);
+								snprintf(buffer, sizeof(buffer), "faces[%llu].indices[%llu]", faceIndex, subIndex);
 								break;
 							}
 							default: {
-								snprintf(buffer, sizeof(buffer), "%d bytes", offset);
+								snprintf(buffer, sizeof(buffer), "%llu bytes", offset);
 								break;
 							}
 						}
@@ -660,7 +660,7 @@ void Trace::renderGuiInWindow() {
 		ImGui::TableHeadersRow();
 
 		ImGuiListClipper clipper;
-		clipper.Begin(this->header.launch_info_count);
+		clipper.Begin(static_cast<int>(this->header.launch_info_count));
 		while (clipper.Step()) {
 			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 				launch_info_t* info = (launch_info_t*) &this->mmap[this->header.launch_info_offset + row * this->header.launch_info_size];
@@ -688,7 +688,7 @@ void Trace::renderGuiInWindow() {
 		ImGui::TableHeadersRow();
 
 		ImGuiListClipper clipper;
-		clipper.Begin(this->header.mem_region_count);
+		clipper.Begin(static_cast<int>(this->header.mem_region_count));
 		while (clipper.Step()) {
 			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 				mem_region_t* region = (mem_region_t*) &this->mmap[this->header.mem_region_offset + row * this->header.mem_region_size];
@@ -699,7 +699,7 @@ void Trace::renderGuiInWindow() {
 				ImGui::TableNextColumn();
 
 				char label[32];
-				snprintf(label, sizeof(label), "%d", region->mem_region_id);
+				snprintf(label, sizeof(label), "%llu", region->mem_region_id);
 				ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
 				if (ImGui::Selectable(label, app.selected_mem_region_id == region->mem_region_id, selectable_flags)) {
 					app.selected_instr_addr = UINT64_MAX;
@@ -733,7 +733,7 @@ void Trace::renderGuiInWindow() {
 		ImGui::TableHeadersRow();
 
 		ImGuiListClipper clipper;
-		clipper.Begin(this->instructions.size());
+		clipper.Begin(static_cast<int>(this->instructions.size()));
 		while (clipper.Step()) {
 			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 				TraceInstruction& instr = this->instructions[row];
@@ -779,20 +779,20 @@ void Grid::renderGui() {
 
 		ImVec2 mousePos = ImGui::GetMousePos();
 		ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-		int x = mousePos.x - cursorPos.x;
-		int y = mousePos.y - cursorPos.y;
+		float x = mousePos.x - cursorPos.x;
+		float y = mousePos.y - cursorPos.y;
 
 		ImRect bb(cursorPos, ImVec2(cursorPos.x + this->imageWidth, cursorPos.y + this->imageHeight));
 		ImGuiID id = ImGui::GetID("Texture");
 		if (ImGui::ButtonBehavior(bb, id, nullptr, nullptr, ImGuiButtonFlags_PressedOnClickRelease)) {
-			this->targetX = x / this->scale;
-			this->targetY = y / this->scale;
+			this->targetX = static_cast<int>(x / this->scale);
+			this->targetY = static_cast<int>(y / this->scale);
 		}
 
 		Trace* trace = app.workspace ? app.workspace->trace.get() : nullptr;
 		this->update(trace, 0);
 
-		ImGui::Image((void*)(intptr_t)this->texture, ImVec2(this->imageWidth, this->imageHeight));
+		ImGui::Image((void*)(intptr_t)this->texture, ImVec2(static_cast<float>(this->imageWidth), static_cast<float>(this->imageHeight)));
 
 		if (x >= 0 && x < this->imageWidth && y >= 0 && y < this->imageHeight) {
 			ImGui::Text("%d, %d", x, y);
@@ -819,7 +819,7 @@ void Grid::renderGui() {
 			ImGui::TableHeadersRow();
 
 			ImGuiListClipper clipper;
-			clipper.Begin(this->instructions.size());
+			clipper.Begin(static_cast<int>(this->instructions.size()));
 			while (clipper.Step()) {
 				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 					GridInstruction& instr = this->instructions[row];
