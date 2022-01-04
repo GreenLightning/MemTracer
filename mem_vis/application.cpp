@@ -22,6 +22,8 @@
 
 #include "application.hpp"
 
+struct Trace;
+
 struct ConsecutiveAccessAnalysis {
 	uint64_t grid_launch_id;
 	uint64_t mem_region_id;
@@ -29,6 +31,8 @@ struct ConsecutiveAccessAnalysis {
 	uint64_t object_size;
 	uint64_t object_count;
 	std::vector<uint64_t> matrix;
+
+	void run(Trace* trace);
 };
 
 struct RegionLinkAnalysis {
@@ -42,6 +46,8 @@ struct RegionLinkAnalysis {
 	uint64_t object_count_a;
 	uint64_t object_count_b;
 	std::map<int64_t, std::set<int64_t>> links;
+
+	void run(Trace* trace);
 };
 
 struct TraceInstruction {
@@ -60,8 +66,10 @@ struct Trace {
 	std::vector<std::string> strings;
 	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
+	std::vector<mem_access_t> accesses;
 	ConsecutiveAccessAnalysis caa;
 	RegionLinkAnalysis rla;
+	RegionLinkAnalysis rla2;
 
 	~Trace() {
 		mmap.unmap();
@@ -189,7 +197,6 @@ struct Trace {
 
 		auto t0 = std::chrono::high_resolution_clock::now();
 
-		std::vector<mem_access_t> accesses;
 		accesses.reserve(header.mem_access_count);
 		for (int i = 0; i < header.mem_access_count; i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
@@ -214,108 +221,121 @@ struct Trace {
 
 		// ANALYSIS
 
-		{
-			caa.grid_launch_id = 0;
-			caa.mem_region_id = 1;
-			caa.region = find_mem_region(caa.grid_launch_id, caa.mem_region_id);
-			caa.object_size = 4;
-			caa.object_count = caa.region->size / caa.object_size;
-			caa.matrix.reserve(caa.object_count * caa.object_count);
+		caa.grid_launch_id = 0;
+		caa.mem_region_id = 1;
+		caa.region = find_mem_region(caa.grid_launch_id, caa.mem_region_id);
+		caa.object_size = 4;
+		caa.object_count = caa.region->size / caa.object_size;
+		caa.matrix.reserve(caa.object_count * caa.object_count);
+		caa.run(this);
 
-			int32_t last_block_idx_z = -1;
-			int32_t last_block_idx_y = -1;
-			int32_t last_block_idx_x = -1;
-			int32_t last_local_warp_id = -1;
-			int64_t last_access[32];
+		rla.grid_launch_id = 0;
+		rla.region_id_a = 1;
+		rla.region_id_b = 3;
+		rla.region_a = find_mem_region(rla.grid_launch_id, rla.region_id_a);
+		rla.region_b = find_mem_region(rla.grid_launch_id, rla.region_id_b);
+		rla.object_size_a = 4;
+		rla.object_size_b = 12;
+		rla.object_count_a = rla.region_a->size / rla.object_size_a;
+		rla.object_count_b = rla.region_b->size / rla.object_size_b;
+		rla.run(this);
 
-			int i = 0;
-			while (i < accesses.size() && accesses[i].grid_launch_id != caa.grid_launch_id) i++;
-			for (; i < accesses.size(); i++) {
-				mem_access_t* ma = &accesses[i];
-				if (ma->grid_launch_id != caa.grid_launch_id) break;
-
-				if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
-					last_block_idx_z = ma->block_idx_z;
-					last_block_idx_y = ma->block_idx_y;
-					last_block_idx_x = ma->block_idx_x;
-					last_local_warp_id = ma->local_warp_id;
-
-					for (int i = 0; i < 32; i++) {
-						last_access[i] = -1;
-					}
-				}
-
-				TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
-				if (instr.mem_region_id != caa.mem_region_id) continue;
-
-				for (int i = 0; i < 32; i++) {
-					int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - caa.region->start) / caa.object_size;
-					if (last_access[i] >= 0 && access >= 0) {
-						caa.matrix[last_access[i] * caa.object_count + access]++;
-					}
-					last_access[i] = access;
-				}
-			}
-		}
-
-		{
-			rla.grid_launch_id = 0;
-			rla.region_id_a = 1;
-			rla.region_id_b = 3;
-			rla.region_a = find_mem_region(rla.grid_launch_id, rla.region_id_a);
-			rla.region_b = find_mem_region(rla.grid_launch_id, rla.region_id_b);
-			rla.object_size_a = 4;
-			rla.object_size_b = 12;
-			rla.object_count_a = rla.region_a->size / rla.object_size_a;
-			rla.object_count_b = rla.region_b->size / rla.object_size_b;
-
-			int32_t last_block_idx_z = -1;
-			int32_t last_block_idx_y = -1;
-			int32_t last_block_idx_x = -1;
-			int32_t last_local_warp_id = -1;
-			int64_t last_access[32];
-
-			int i = 0;
-			while (i < accesses.size() && accesses[i].grid_launch_id != rla.grid_launch_id) i++;
-			for (; i < accesses.size(); i++) {
-				mem_access_t* ma = &accesses[i];
-				if (ma->grid_launch_id != rla.grid_launch_id) break;
-
-				if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
-					last_block_idx_z = ma->block_idx_z;
-					last_block_idx_y = ma->block_idx_y;
-					last_block_idx_x = ma->block_idx_x;
-					last_local_warp_id = ma->local_warp_id;
-
-					for (int i = 0; i < 32; i++) {
-						last_access[i] = -1;
-					}
-				}
-
-				TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
-				if (instr.mem_region_id == rla.region_id_a) {
-					for (int i = 0; i < 32; i++) {
-						last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - rla.region_a->start) / rla.object_size_a;
-					}
-				} else if (instr.mem_region_id == rla.region_id_b) {
-					for (int i = 0; i < 32; i++) {
-						int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - rla.region_b->start) / rla.object_size_b;
-						if (last_access[i] >= 0 && access >= 0) {
-							rla.links[last_access[i]].insert(access);
-						}
-						last_access[i] = -1;
-					}
-				} else if (instr.mem_region_id != UINT64_MAX) {
-					for (int i = 0; i < 32; i++) {
-						last_access[i] = -1;
-					}
-				}
-			}
-		}
+		rla2.grid_launch_id = 0;
+		rla2.region_id_a = 1;
+		rla2.region_id_b = 2;
+		rla2.region_a = find_mem_region(rla2.grid_launch_id, rla2.region_id_a);
+		rla2.region_b = find_mem_region(rla2.grid_launch_id, rla2.region_id_b);
+		rla2.object_size_a = 4;
+		rla2.object_size_b = 6 * 4;
+		rla2.object_count_a = rla2.region_a->size / rla2.object_size_a;
+		rla2.object_count_b = rla2.region_b->size / rla2.object_size_b;
+		rla2.run(this);
 
 		return "";
 	}
 };
+
+void ConsecutiveAccessAnalysis::run(Trace* trace) {
+	int32_t last_block_idx_z = -1;
+	int32_t last_block_idx_y = -1;
+	int32_t last_block_idx_x = -1;
+	int32_t last_local_warp_id = -1;
+	int64_t last_access[32];
+
+	int i = 0;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	for (; i < trace->accesses.size(); i++) {
+		mem_access_t* ma = &trace->accesses[i];
+		if (ma->grid_launch_id != this->grid_launch_id) break;
+
+		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+			last_block_idx_z = ma->block_idx_z;
+			last_block_idx_y = ma->block_idx_y;
+			last_block_idx_x = ma->block_idx_x;
+			last_local_warp_id = ma->local_warp_id;
+
+			for (int i = 0; i < 32; i++) {
+				last_access[i] = -1;
+			}
+		}
+
+		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
+		if (instr.mem_region_id != this->mem_region_id) continue;
+
+		for (int i = 0; i < 32; i++) {
+			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->object_size;
+			if (last_access[i] >= 0 && access >= 0) {
+				this->matrix[last_access[i] * this->object_count + access]++;
+			}
+			last_access[i] = access;
+		}
+	}
+}
+
+void RegionLinkAnalysis::run(Trace* trace) {
+	int32_t last_block_idx_z = -1;
+	int32_t last_block_idx_y = -1;
+	int32_t last_block_idx_x = -1;
+	int32_t last_local_warp_id = -1;
+	int64_t last_access[32];
+
+	int i = 0;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	for (; i < trace->accesses.size(); i++) {
+		mem_access_t* ma = &trace->accesses[i];
+		if (ma->grid_launch_id != this->grid_launch_id) break;
+
+		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+			last_block_idx_z = ma->block_idx_z;
+			last_block_idx_y = ma->block_idx_y;
+			last_block_idx_x = ma->block_idx_x;
+			last_local_warp_id = ma->local_warp_id;
+
+			for (int i = 0; i < 32; i++) {
+				last_access[i] = -1;
+			}
+		}
+
+		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
+		if (instr.mem_region_id == this->region_id_a) {
+			for (int i = 0; i < 32; i++) {
+				last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_a->start) / this->object_size_a;
+			}
+		} else if (instr.mem_region_id == this->region_id_b) {
+			for (int i = 0; i < 32; i++) {
+				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_b->start) / this->object_size_b;
+				if (last_access[i] >= 0 && access >= 0) {
+					this->links[last_access[i]].insert(access);
+				}
+				last_access[i] = -1;
+			}
+		} else if (instr.mem_region_id != UINT64_MAX) {
+			for (int i = 0; i < 32; i++) {
+				last_access[i] = -1;
+			}
+		}
+	}
+}
 
 struct GridInstruction {
 	uint64_t    instr_addr;
