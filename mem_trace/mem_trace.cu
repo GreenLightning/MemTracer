@@ -64,6 +64,8 @@ struct context_state_t {
 	meow_state hash_state;
 	std::vector<launch_info_t> launch_infos;
 	std::vector<mem_region_t> mem_regions;
+	std::vector<std::vector<uint8_t>> mem_contents;
+	uint64_t mem_contents_offset = 0;
 
 	sem_t recv_done;
 	ChannelDev* channel_dev;
@@ -86,6 +88,7 @@ int next_channel_id = 0;
 uint32_t instr_begin_interval = 0;
 uint32_t instr_end_interval = UINT32_MAX;
 int verbose = 0;
+int store_contents = 0;
 std::string filename = "";
 
 void nvbit_at_init() {
@@ -97,6 +100,7 @@ void nvbit_at_init() {
 		instr_end_interval, "INSTR_END", UINT32_MAX,
 		"End of the instruction interval where to apply instrumentation");
 	GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
+	GET_VAR_INT(store_contents, "TOOL_STORE_CONTENTS", 0, "Store memory contents in trace");
 	GET_VAR_STR(filename, "TOOL_FILENAME", "Output filename to write the trace into");
 	std::string pad(100, '-');
 	printf("%s\n", pad.c_str());
@@ -209,6 +213,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 				region.mem_region_id = next_mem_region_id++;
 				region.start = static_cast<uint64_t>(*p->dptr);
 				region.size = p->bytesize;
+				region.contents_offset = UINT64_MAX;
 				ctx_state->active_mem_regions.push_back(region);
 			}
 		} break;
@@ -272,6 +277,16 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 				// Record memory regions at launch time.
 				for (auto region : ctx_state->active_mem_regions) {
 					region.grid_launch_id = current_grid_launch_id;
+					if (store_contents) {
+						std::vector<uint8_t> contents;
+						contents.resize(region.size);
+						CUDA_SAFECALL(cudaMemcpy(contents.data(), (void*)(CUdeviceptr)(region.start), region.size, cudaMemcpyDeviceToHost));
+
+						region.contents_offset = ctx_state->mem_contents_offset;
+
+						ctx_state->mem_contents.push_back(std::move(contents));
+						ctx_state->mem_contents_offset += region.size;
+					}
 					ctx_state->mem_regions.push_back(region);
 				}
 			}
@@ -441,6 +456,18 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 		}
 		ctx_state->header.strings_offset = strings_offset;
 		ctx_state->header.strings_size   = ftell(ctx_state->file) - strings_offset;
+
+		if (store_contents) {
+			// Confusing, but correct. The offset on the state is local to this section,
+			// its final value is the total size. The offset on the header describes
+			// the offset in the file.
+			ctx_state->header.mem_contents_offset = ftell(ctx_state->file);
+			ctx_state->header.mem_contents_size = ctx_state->mem_contents_offset;
+			for (auto& contents : ctx_state->mem_contents) {
+				MeowAbsorb(&ctx_state->hash_state, contents.size(), (void*) contents.data());
+				fwrite(contents.data(), contents.size(), 1, ctx_state->file);
+			}
+		}
 
 		MeowAbsorb(&ctx_state->hash_state, sizeof(header_t), &ctx_state->header);
 
