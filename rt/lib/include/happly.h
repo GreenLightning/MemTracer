@@ -238,11 +238,10 @@ T swapEndian(T val) {
   return val;
 }
 
-template <>
-uint8_t swapEndian<uint8_t>(uint8_t val) { return val; }
+// The following specializations for single-byte types are used to avoid compiler warnings.
+template <> int8_t swapEndian<int8_t>(int8_t val) { return val; }
+template <> uint8_t swapEndian<uint8_t>(uint8_t val) { return val; }
 
-template <>
-int8_t swapEndian<int8_t>(int8_t val) { return val; }
 
 // Unpack flattened list from the convention used in TypedListProperty
 template <typename T>
@@ -952,7 +951,7 @@ public:
 
     // Find the property
     std::unique_ptr<Property>& prop = getPropertyPtr(propertyName);
-    TypedProperty<T>* castedProp = (TypedProperty<T>*)(prop);
+    TypedProperty<T>* castedProp = dynamic_cast<TypedProperty<T>*>(prop.get());
     if (castedProp) {
       return castedProp->data;
     }
@@ -995,7 +994,7 @@ public:
 
     // Find the property
     std::unique_ptr<Property>& prop = getPropertyPtr(propertyName);
-    TypedListProperty<T>* castedProp = (TypedListProperty<T>*)(prop);
+    TypedListProperty<T>* castedProp = dynamic_cast<TypedListProperty<T>*>(prop.get());
     if (castedProp) {
       return unflattenList(castedProp->flattenedData, castedProp->flattenedIndexStart);
     }
