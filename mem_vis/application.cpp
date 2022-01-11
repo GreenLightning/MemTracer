@@ -663,58 +663,64 @@ struct Grid {
 	}
 };
 
-struct Workspace {
-	std::unique_ptr<Trace> trace;
+struct AnalysisSet {
 	InstructionBasedSizeAnalysis ibsa;
 	ConsecutiveAccessAnalysis caa;
 	RegionLinkAnalysis rla;
 	RegionLinkAnalysis rla2;
 	LinearAccessAnalysis laa;
+
+	void init(Trace* trace) {
+		ibsa.grid_launch_id = 0;
+		ibsa.run(trace);
+
+		caa.grid_launch_id = 0;
+		caa.mem_region_id = 1;
+		caa.region = trace->find_mem_region(caa.grid_launch_id, caa.mem_region_id);
+		caa.object_size = 4;
+		caa.object_count = caa.region->size / caa.object_size;
+		caa.run(trace);
+
+		rla.grid_launch_id = 0;
+		rla.region_id_a = 1;
+		rla.region_id_b = 3;
+		rla.region_a = trace->find_mem_region(rla.grid_launch_id, rla.region_id_a);
+		rla.region_b = trace->find_mem_region(rla.grid_launch_id, rla.region_id_b);
+		rla.object_size_a = 4;
+		rla.object_size_b = 12;
+		rla.object_count_a = rla.region_a->size / rla.object_size_a;
+		rla.object_count_b = rla.region_b->size / rla.object_size_b;
+		rla.run(trace);
+
+		rla2.grid_launch_id = 0;
+		rla2.region_id_a = 1;
+		rla2.region_id_b = 2;
+		rla2.region_a = trace->find_mem_region(rla2.grid_launch_id, rla2.region_id_a);
+		rla2.region_b = trace->find_mem_region(rla2.grid_launch_id, rla2.region_id_b);
+		rla2.object_size_a = 4;
+		rla2.object_size_b = 6 * 4;
+		rla2.object_count_a = rla2.region_a->size / rla2.object_size_a;
+		rla2.object_count_b = rla2.region_b->size / rla2.object_size_b;
+		rla2.run(trace);
+
+		laa.grid_launch_id = 0;
+		laa.mem_region_id = 3;
+		laa.region = trace->find_mem_region(laa.grid_launch_id, laa.mem_region_id);
+		laa.object_size = 12;
+		laa.object_count = laa.region->size / laa.object_size;
+		laa.run(trace);
+	}
+};
+
+struct Workspace {
+	std::unique_ptr<Trace> trace;
+	AnalysisSet analysis;
 };
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
-
-	ws->ibsa.grid_launch_id = 0;
-	ws->ibsa.run(trace.get());
-
-	ws->caa.grid_launch_id = 0;
-	ws->caa.mem_region_id = 1;
-	ws->caa.region = trace->find_mem_region(ws->caa.grid_launch_id, ws->caa.mem_region_id);
-	ws->caa.object_size = 4;
-	ws->caa.object_count = ws->caa.region->size / ws->caa.object_size;
-	ws->caa.run(trace.get());
-
-	ws->rla.grid_launch_id = 0;
-	ws->rla.region_id_a = 1;
-	ws->rla.region_id_b = 3;
-	ws->rla.region_a = trace->find_mem_region(ws->rla.grid_launch_id, ws->rla.region_id_a);
-	ws->rla.region_b = trace->find_mem_region(ws->rla.grid_launch_id, ws->rla.region_id_b);
-	ws->rla.object_size_a = 4;
-	ws->rla.object_size_b = 12;
-	ws->rla.object_count_a = ws->rla.region_a->size / ws->rla.object_size_a;
-	ws->rla.object_count_b = ws->rla.region_b->size / ws->rla.object_size_b;
-	ws->rla.run(trace.get());
-
-	ws->rla2.grid_launch_id = 0;
-	ws->rla2.region_id_a = 1;
-	ws->rla2.region_id_b = 2;
-	ws->rla2.region_a = trace->find_mem_region(ws->rla2.grid_launch_id, ws->rla2.region_id_a);
-	ws->rla2.region_b = trace->find_mem_region(ws->rla2.grid_launch_id, ws->rla2.region_id_b);
-	ws->rla2.object_size_a = 4;
-	ws->rla2.object_size_b = 6 * 4;
-	ws->rla2.object_count_a = ws->rla2.region_a->size / ws->rla2.object_size_a;
-	ws->rla2.object_count_b = ws->rla2.region_b->size / ws->rla2.object_size_b;
-	ws->rla2.run(trace.get());
-
-	ws->laa.grid_launch_id = 0;
-	ws->laa.mem_region_id = 3;
-	ws->laa.region = trace->find_mem_region(ws->laa.grid_launch_id, ws->laa.mem_region_id);
-	ws->laa.object_size = 12;
-	ws->laa.object_count = ws->laa.region->size / ws->laa.object_size;
-	ws->laa.run(trace.get());
-
 	ws->trace = std::move(trace);
+	ws->analysis.init(ws->trace.get());
 	return ws;
 }
 
@@ -1194,11 +1200,11 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	app.grid.renderGui();
 
 	if (app.workspace) {
-		app.workspace->ibsa.renderGui("Instruction Based Size Analysis");
-		app.workspace->caa.renderGui("Consecutive Access Analysis");
-		app.workspace->rla.renderGui("Region Link Analysis - Nodes - Indices");
-		app.workspace->rla2.renderGui("Region Link Analysis - Nodes - Bounds");
-		app.workspace->laa.renderGui("Linear Access Analysis");
+		app.workspace->analysis.ibsa.renderGui("Instruction Based Size Analysis");
+		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis");
+		app.workspace->analysis.rla.renderGui("Region Link Analysis - Nodes - Indices");
+		app.workspace->analysis.rla2.renderGui("Region Link Analysis - Nodes - Bounds");
+		app.workspace->analysis.laa.renderGui("Linear Access Analysis");
 	}
 
 	if (app.demo) {
