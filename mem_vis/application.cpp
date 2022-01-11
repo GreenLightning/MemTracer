@@ -1057,15 +1057,19 @@ void LinearAccessAnalysis::renderGui(const char* title) {
 			ImGui::TableSetupColumn("Linear", ImGuiTableColumnFlags_None);
 			ImGui::TableHeadersRow();
 
-			for (int i = 0; i < this->flags.size(); i++) {
-				uint8_t flags = this->flags[i];
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", i);
-				ImGui::TableNextColumn();
-				ImGui::Text("%s", (flags & ACCESSED) ? "x" : "");
-				ImGui::TableNextColumn();
-				ImGui::Text("%s", (flags & LINEAR) ? "x" : "");
+			ImGuiListClipper clipper;
+			clipper.Begin(static_cast<int>(this->flags.size()));
+			while (clipper.Step()) {
+				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+					uint8_t flags = this->flags[row];
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", row);
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", (flags & ACCESSED) ? "x" : "");
+					ImGui::TableNextColumn();
+					ImGui::Text("%s", (flags & LINEAR) ? "x" : "");
+				}
 			}
 			ImGui::EndTable();
 		}
