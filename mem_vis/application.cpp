@@ -666,8 +666,8 @@ struct Grid {
 struct AnalysisSet {
 	InstructionBasedSizeAnalysis ibsa;
 	ConsecutiveAccessAnalysis caa;
-	RegionLinkAnalysis rla;
-	RegionLinkAnalysis rla2;
+	RegionLinkAnalysis index_rla;
+	RegionLinkAnalysis bounds_rla;
 	LinearAccessAnalysis laa;
 
 	void init(Trace* trace) {
@@ -681,27 +681,27 @@ struct AnalysisSet {
 		caa.object_count = caa.region->size / caa.object_size;
 		caa.run(trace);
 
-		rla.grid_launch_id = 0;
-		rla.region_id_a = 1;
-		rla.region_id_b = 3;
-		rla.region_a = trace->find_mem_region(rla.grid_launch_id, rla.region_id_a);
-		rla.region_b = trace->find_mem_region(rla.grid_launch_id, rla.region_id_b);
-		rla.object_size_a = 4;
-		rla.object_size_b = 12;
-		rla.object_count_a = rla.region_a->size / rla.object_size_a;
-		rla.object_count_b = rla.region_b->size / rla.object_size_b;
-		rla.run(trace);
+		index_rla.grid_launch_id = 0;
+		index_rla.region_id_a = 1;
+		index_rla.region_id_b = 3;
+		index_rla.region_a = trace->find_mem_region(index_rla.grid_launch_id, index_rla.region_id_a);
+		index_rla.region_b = trace->find_mem_region(index_rla.grid_launch_id, index_rla.region_id_b);
+		index_rla.object_size_a = 4;
+		index_rla.object_size_b = 12;
+		index_rla.object_count_a = index_rla.region_a->size / index_rla.object_size_a;
+		index_rla.object_count_b = index_rla.region_b->size / index_rla.object_size_b;
+		index_rla.run(trace);
 
-		rla2.grid_launch_id = 0;
-		rla2.region_id_a = 1;
-		rla2.region_id_b = 2;
-		rla2.region_a = trace->find_mem_region(rla2.grid_launch_id, rla2.region_id_a);
-		rla2.region_b = trace->find_mem_region(rla2.grid_launch_id, rla2.region_id_b);
-		rla2.object_size_a = 4;
-		rla2.object_size_b = 6 * 4;
-		rla2.object_count_a = rla2.region_a->size / rla2.object_size_a;
-		rla2.object_count_b = rla2.region_b->size / rla2.object_size_b;
-		rla2.run(trace);
+		bounds_rla.grid_launch_id = 0;
+		bounds_rla.region_id_a = 1;
+		bounds_rla.region_id_b = 2;
+		bounds_rla.region_a = trace->find_mem_region(bounds_rla.grid_launch_id, bounds_rla.region_id_a);
+		bounds_rla.region_b = trace->find_mem_region(bounds_rla.grid_launch_id, bounds_rla.region_id_b);
+		bounds_rla.object_size_a = 4;
+		bounds_rla.object_size_b = 6 * 4;
+		bounds_rla.object_count_a = bounds_rla.region_a->size / bounds_rla.object_size_a;
+		bounds_rla.object_count_b = bounds_rla.region_b->size / bounds_rla.object_size_b;
+		bounds_rla.run(trace);
 
 		laa.grid_launch_id = 0;
 		laa.mem_region_id = 3;
@@ -1202,8 +1202,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	if (app.workspace) {
 		app.workspace->analysis.ibsa.renderGui("Instruction Based Size Analysis");
 		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis");
-		app.workspace->analysis.rla.renderGui("Region Link Analysis - Nodes - Indices");
-		app.workspace->analysis.rla2.renderGui("Region Link Analysis - Nodes - Bounds");
+		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices");
+		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds");
 		app.workspace->analysis.laa.renderGui("Linear Access Analysis");
 	}
 
