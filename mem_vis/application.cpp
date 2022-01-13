@@ -795,8 +795,29 @@ struct Reconstruction {
 		// Mark root node.
 		if (nodeByIndex.count(0)) nodeByIndex[0]->used = true;
 
-		std::vector<std::pair<int64_t, uint64_t>> children;
+		// Each node may only be used once in the tree construction (i.e. have at most one parent)
+		// to prevent forming a graph. We sort by the total number of accesses, which is a proxy
+		// for our confidence in the relation, to form connections we are more confident of first.
+
+		std::vector<std::pair<int64_t, uint64_t>> totals; // (parent_index, total)
 		for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.object_count); parent_index++) {
+			uint64_t total = 0;
+			for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
+				total += analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
+			}
+			if (total) {
+				totals.emplace_back(parent_index, total);
+			}
+		}
+
+		std::sort(totals.begin(), totals.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
+			return a.second > b.second;
+		});
+
+		std::vector<std::pair<int64_t, uint64_t>> children; // (child_index, count)
+		for (const auto& pair : totals) {
+			int64_t parent_index = pair.first;
+
 			children.clear();
 
 			for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
@@ -815,16 +836,10 @@ struct Reconstruction {
 				return a.second > b.second;
 			});
 
-			if (children.size() >= 2) {
-				children.resize(2);
-				if (children[1].second < children[0].second / 4) {
-					children.resize(1);
-				}
-			}
-
-			std::sort(children.begin(), children.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
-				return a.first < b.first;
-			});
+			uint64_t cutoff = children[0].second / 4;
+			int64_t size = 1;
+			while (size < children.size() && children[size].second >= cutoff) size++;
+			children.resize(size);
 
 			parent->type = Node::PARENT;
 			Node** target = &parent->parent_data.left;
