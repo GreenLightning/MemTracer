@@ -783,14 +783,10 @@ struct Node {
 	};
 };
 
-struct Reconstruction {
+struct Tree {
 	std::vector<Node> storage;
 	std::vector<Node*> parents;
 	std::vector<Node*> leafs;
-	std::unordered_map<int64_t, Node*> nodeByIndex;
-	int64_t tree_unknowns = 0;
-	int64_t tree_parents = 0;
-	int64_t tree_leafs = 0;
 
 	Node* allocateNode() {
 		if (storage.size() >= storage.capacity()) {
@@ -800,149 +796,199 @@ struct Reconstruction {
 		storage.push_back(Node{});
 		return &storage.back();
 	}
+};
 
-	void build(AnalysisSet* analysis) {
-		storage.reserve(analysis->nodes_laa.object_count);
+Tree buildReferenceTree(Trace* trace) {
+	Tree tree;
 
-		for (int64_t index = 0; index < static_cast<int64_t>(analysis->nodes_laa.object_count); index++) {
-			if (analysis->nodes_laa.flags[index] & LinearAccessAnalysis::ACCESSED) {
-				Node* node = allocateNode();
-				node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.object_size;
-				nodeByIndex[index] = node;
+	// Check if trace contains memory contents.
+	if (!trace->header.mem_contents_offset) return tree;
+
+	mem_region_t* node_region = trace->find_mem_region(0, 1);
+	mem_region_t* index_region = trace->find_mem_region(0, 3);
+
+	uint32_t* node_data = (uint32_t*) &trace->mmap[trace->header.mem_contents_offset + node_region->contents_offset];
+	int node_count = static_cast<int>(node_region->size / 4);
+	int leaf_count = (node_count + 1) / 2;
+	int triangles_per_leaf = static_cast<int>(index_region->size / (3 * 4) / leaf_count);
+
+	int leaf_index = 0;
+	tree.storage.resize(node_count);
+	for (int i = 0; i < node_count; i++) {
+		Node* node = &tree.storage[i];
+
+		uint32_t data = node_data[i];
+		uint32_t payload = data & 0x7fffffffu;
+		bool is_leaf = data >> 31;
+
+		node->type = is_leaf ? Node::LEAF : Node::PARENT;
+		node->address = node_region->start + i * 4;
+
+		if (is_leaf) {
+			node->leaf_data.face_address = index_region->start + leaf_index * triangles_per_leaf * 3 * 4;
+			node->leaf_data.face_count = payload;
+			leaf_index++;
+		} else {
+			node->parent_data.left = &tree.storage[i + 1];
+			node->parent_data.right = &tree.storage[i + payload];
+		}
+	}
+
+	return tree;
+}
+
+Tree reconstructTree(AnalysisSet* analysis) {
+	Tree tree;
+	std::unordered_map<int64_t, Node*> nodeByIndex;
+
+	int64_t tree_unknowns = 0;
+	int64_t tree_parents = 0;
+	int64_t tree_leafs = 0;
+
+	tree.storage.reserve(analysis->nodes_laa.object_count);
+
+	for (int64_t index = 0; index < static_cast<int64_t>(analysis->nodes_laa.object_count); index++) {
+		if (analysis->nodes_laa.flags[index] & LinearAccessAnalysis::ACCESSED) {
+			Node* node = tree.allocateNode();
+			node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.object_size;
+			nodeByIndex[index] = node;
+		}
+	}
+
+	for (auto& pair : analysis->index_rla.links) {
+		if (pair.second.size() == 1) {
+			auto from_index = pair.first;
+			auto to_index = *pair.second.begin();
+
+			Node* node = nodeByIndex[from_index];
+			node->type = Node::LEAF;
+
+			int64_t end_index = to_index + 1;
+			int64_t count = static_cast<int64_t>(analysis->index_laa.object_count);
+			while (end_index < count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR)) end_index++;
+
+			node->leaf_data.face_address = analysis->index_rla.region_b->start + from_index * analysis->index_rla.object_size_b;
+			node->leaf_data.face_count = end_index - to_index;
+
+			tree.leafs.push_back(node);
+		}
+	}
+
+	// Mark root node.
+	if (nodeByIndex.count(0)) nodeByIndex[0]->used = true;
+
+	// Each node may only be used once in the tree construction (i.e. have at most one parent)
+	// to prevent forming a graph. We sort by the total number of accesses, which is a proxy
+	// for our confidence in the relation, to form connections we are more confident of first.
+
+	std::vector<std::pair<int64_t, uint64_t>> totals; // (parent_index, total)
+	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.object_count); parent_index++) {
+		uint64_t total = 0;
+		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
+			total += analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
+		}
+		if (total) {
+			totals.emplace_back(parent_index, total);
+		}
+	}
+
+	std::sort(totals.begin(), totals.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
+		return a.second > b.second;
+	});
+
+	std::vector<std::pair<int64_t, uint64_t>> children; // (child_index, count)
+	for (const auto& pair : totals) {
+		int64_t parent_index = pair.first;
+
+		children.clear();
+
+		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
+			auto count = analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
+			if (count != 0) {
+				children.emplace_back(child_index, count);
 			}
 		}
 
-		for (auto& pair : analysis->index_rla.links) {
-			if (pair.second.size() == 1) {
-				auto from_index = pair.first;
-				auto to_index = *pair.second.begin();
+		if (children.empty()) continue;
 
-				Node* node = nodeByIndex[from_index];
-				node->type = Node::LEAF;
+		Node* parent = nodeByIndex[parent_index];
+		if (parent->type != Node::UNKNOWN) continue;
 
-				int64_t end_index = to_index + 1;
-				int64_t count = static_cast<int64_t>(analysis->index_laa.object_count);
-				while (end_index < count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR)) end_index++;
-
-				node->leaf_data.face_address = analysis->index_rla.region_b->start + from_index * analysis->index_rla.object_size_b;
-				node->leaf_data.face_count = end_index - to_index;
-
-				leafs.push_back(node);
-			}
-		}
-
-		// Mark root node.
-		if (nodeByIndex.count(0)) nodeByIndex[0]->used = true;
-
-		// Each node may only be used once in the tree construction (i.e. have at most one parent)
-		// to prevent forming a graph. We sort by the total number of accesses, which is a proxy
-		// for our confidence in the relation, to form connections we are more confident of first.
-
-		std::vector<std::pair<int64_t, uint64_t>> totals; // (parent_index, total)
-		for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.object_count); parent_index++) {
-			uint64_t total = 0;
-			for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
-				total += analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
-			}
-			if (total) {
-				totals.emplace_back(parent_index, total);
-			}
-		}
-
-		std::sort(totals.begin(), totals.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
+		std::sort(children.begin(), children.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
 			return a.second > b.second;
 		});
 
-		std::vector<std::pair<int64_t, uint64_t>> children; // (child_index, count)
-		for (const auto& pair : totals) {
-			int64_t parent_index = pair.first;
+		uint64_t cutoff = children[0].second / 4;
+		uint64_t size = 1;
+		while (size < children.size() && children[size].second >= cutoff) size++;
+		children.resize(size);
 
-			children.clear();
-
-			for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
-				auto count = analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
-				if (count != 0) {
-					children.emplace_back(child_index, count);
-				}
-			}
-
-			if (children.empty()) continue;
-
-			Node* parent = nodeByIndex[parent_index];
-			if (parent->type != Node::UNKNOWN) continue;
-
-			std::sort(children.begin(), children.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
-				return a.second > b.second;
-			});
-
-			uint64_t cutoff = children[0].second / 4;
-			uint64_t size = 1;
-			while (size < children.size() && children[size].second >= cutoff) size++;
-			children.resize(size);
-
-			parent->type = Node::PARENT;
-			Node** target = &parent->parent_data.left;
-			for (const auto& pair : children) {
-				Node* child = nodeByIndex[pair.first];
-				if (child->used) continue;
-				child->used = true;
-				*target = child;
-				if (target == &parent->parent_data.left) {
-					target = &parent->parent_data.right;
-				} else {
-					break;
-				}
-			}
-
-			parents.push_back(parent);
-		}
-
-		if (nodeByIndex.count(0)) {
-			std::vector<Node*> stack;
-			stack.push_back(nodeByIndex[0]);
-
-			while (!stack.empty()) {
-				Node* node = stack.back();
-				stack.pop_back();
-				switch (node->type) {
-					case Node::UNKNOWN:
-						tree_unknowns++;
-						break;
-
-					case Node::PARENT:
-						tree_parents++;
-						if (node->parent_data.left) stack.push_back(node->parent_data.left);
-						if (node->parent_data.right) stack.push_back(node->parent_data.right);
-						break;
-
-					case Node::LEAF:
-						tree_leafs++;
-						break;
-				}
+		parent->type = Node::PARENT;
+		Node** target = &parent->parent_data.left;
+		for (const auto& pair : children) {
+			Node* child = nodeByIndex[pair.first];
+			if (child->used) continue;
+			child->used = true;
+			*target = child;
+			if (target == &parent->parent_data.left) {
+				target = &parent->parent_data.right;
+			} else {
+				break;
 			}
 		}
 
-		printf("nodes: %lld\n", storage.size());
-		printf("parents: %lld\n", parents.size());
-		printf("leafs: %lld\n", leafs.size());
-
-		printf("tree_unknowns: %lld\n", tree_unknowns);
-		printf("tree_parents: %lld\n", tree_parents);
-		printf("tree_leafs: %lld\n", tree_leafs);
+		tree.parents.push_back(parent);
 	}
-};
+
+	if (nodeByIndex.count(0)) {
+		std::vector<Node*> stack;
+		stack.push_back(nodeByIndex[0]);
+
+		while (!stack.empty()) {
+			Node* node = stack.back();
+			stack.pop_back();
+			switch (node->type) {
+				case Node::UNKNOWN:
+					tree_unknowns++;
+					break;
+
+				case Node::PARENT:
+					tree_parents++;
+					if (node->parent_data.left) stack.push_back(node->parent_data.left);
+					if (node->parent_data.right) stack.push_back(node->parent_data.right);
+					break;
+
+				case Node::LEAF:
+					tree_leafs++;
+					break;
+			}
+		}
+	}
+
+	printf("nodes: %lld\n", tree.storage.size());
+	printf("parents: %lld\n", tree.parents.size());
+	printf("leafs: %lld\n", tree.leafs.size());
+
+	printf("tree_unknowns: %lld\n", tree_unknowns);
+	printf("tree_parents: %lld\n", tree_parents);
+	printf("tree_leafs: %lld\n", tree_leafs);
+
+	return tree;
+}
 
 struct Workspace {
 	std::unique_ptr<Trace> trace;
 	AnalysisSet analysis;
-	Reconstruction reconstruction;
+	Tree reference;
+	Tree reconstruction;
 };
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
 	ws->trace = std::move(trace);
 	ws->analysis.init(ws->trace.get());
-	ws->reconstruction.build(&ws->analysis);
+	ws->reference = buildReferenceTree(ws->trace.get());
+	ws->reconstruction = reconstructTree(&ws->analysis);
 	return ws;
 }
 
