@@ -446,6 +446,40 @@ void RegionLinkAnalysis::run(Trace* trace) {
 	}
 }
 
+struct CaaDistributionAnalysis {
+	constexpr static int64_t num_buckets = 101;
+
+	ConsecutiveAccessAnalysis* caa;
+	int64_t buckets[num_buckets];
+
+	void run() {
+		std::vector<uint64_t> counts;
+		for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(caa->object_count); parent_index++) {
+			counts.clear();
+
+			for (int64_t child_index = 0; child_index < static_cast<int64_t>(caa->object_count); child_index++) {
+				auto count = caa->matrix[parent_index * caa->object_count + child_index];
+				if (count != 0) counts.emplace_back(count);
+			}
+
+			if (counts.empty()) continue;
+
+			uint64_t max = counts[0];
+			for (auto count : counts) {
+				if (count > max) max = count;
+			}
+			for (auto count : counts) {
+				if (count == max) continue;
+				float value = static_cast<float>(count) / static_cast<float>(max);
+				int64_t bucket = static_cast<int64_t>(value * (num_buckets-1));
+				buckets[bucket]++;
+			}
+		}
+	}
+
+	void renderGui(const char* title);
+};
+
 struct GridInstruction {
 	uint64_t    instr_addr;
 	std::string opcode;
@@ -671,6 +705,7 @@ struct AnalysisSet {
 	RegionLinkAnalysis bounds_rla;
 	LinearAccessAnalysis nodes_laa;
 	LinearAccessAnalysis index_laa;
+	CaaDistributionAnalysis caada;
 
 	void init(Trace* trace) {
 		ibsa.grid_launch_id = 0;
@@ -718,6 +753,9 @@ struct AnalysisSet {
 		index_laa.object_size = 12;
 		index_laa.object_count = index_laa.region->size / index_laa.object_size;
 		index_laa.run(trace);
+
+		caada.caa = &caa;
+		caada.run();
 	}
 };
 
@@ -838,7 +876,7 @@ struct Reconstruction {
 			});
 
 			uint64_t cutoff = children[0].second / 4;
-			int64_t size = 1;
+			uint64_t size = 1;
 			while (size < children.size() && children[size].second >= cutoff) size++;
 			children.resize(size);
 
@@ -1336,6 +1374,18 @@ void RegionLinkAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
+void CaaDistributionAnalysis::renderGui(const char* title) {
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title)) {
+		if (ImPlot::BeginPlot("Distribution")) {
+			ImPlot::PlotBars("My Bar Plot", buckets, num_buckets);
+			ImPlot::EndPlot();
+		}
+	}
+	ImGui::End();
+}
+
 bool BeginMainStatusBar() {
 	ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar;
 	bool open = ImGui::BeginViewportSideBar("##MainStatusBar", ImGui::GetMainViewport(), ImGuiDir_Down, ImGui::GetFrameHeight(), flags);
@@ -1391,6 +1441,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices");
 		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds");
 		app.workspace->analysis.index_laa.renderGui("Linear Access Analysis");
+		app.workspace->analysis.caada.renderGui("CAA Distribution Analysis");
 	}
 
 	if (app.demo) {
