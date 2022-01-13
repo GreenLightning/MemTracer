@@ -11,6 +11,7 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <implot.h>
 
 #include <defer.hpp>
 #include <mio.hpp>

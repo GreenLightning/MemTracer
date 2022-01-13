@@ -12,10 +12,15 @@ add_executable(mem_vis
 	"lib/imgui/imgui_tables.cpp"
 	"lib/imgui/imgui_impl_glfw.cpp"
 	"lib/imgui/imgui_impl_opengl3.cpp"
+
+	"lib/implot/implot.cpp"
+	"lib/implot/implot_demo.cpp"
+	"lib/implot/implot_items.cpp"
 )
 
 target_include_directories(mem_vis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 target_include_directories(mem_vis PRIVATE "lib/imgui")
+target_include_directories(mem_vis PRIVATE "lib/implot")
 
 # Set Working Directory in Visual Studio.
 set_property(TARGET mem_vis PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
