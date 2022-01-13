@@ -668,7 +668,8 @@ struct AnalysisSet {
 	ConsecutiveAccessAnalysis caa;
 	RegionLinkAnalysis index_rla;
 	RegionLinkAnalysis bounds_rla;
-	LinearAccessAnalysis laa;
+	LinearAccessAnalysis nodes_laa;
+	LinearAccessAnalysis index_laa;
 
 	void init(Trace* trace) {
 		ibsa.grid_launch_id = 0;
@@ -703,24 +704,191 @@ struct AnalysisSet {
 		bounds_rla.object_count_b = bounds_rla.region_b->size / bounds_rla.object_size_b;
 		bounds_rla.run(trace);
 
-		laa.grid_launch_id = 0;
-		laa.mem_region_id = 3;
-		laa.region = trace->find_mem_region(laa.grid_launch_id, laa.mem_region_id);
-		laa.object_size = 12;
-		laa.object_count = laa.region->size / laa.object_size;
-		laa.run(trace);
+		nodes_laa.grid_launch_id = 0;
+		nodes_laa.mem_region_id = 1;
+		nodes_laa.region = trace->find_mem_region(nodes_laa.grid_launch_id, nodes_laa.mem_region_id);
+		nodes_laa.object_size = 4;
+		nodes_laa.object_count = nodes_laa.region->size / nodes_laa.object_size;
+		nodes_laa.run(trace);
+
+		index_laa.grid_launch_id = 0;
+		index_laa.mem_region_id = 3;
+		index_laa.region = trace->find_mem_region(index_laa.grid_launch_id, index_laa.mem_region_id);
+		index_laa.object_size = 12;
+		index_laa.object_count = index_laa.region->size / index_laa.object_size;
+		index_laa.run(trace);
+	}
+};
+
+struct Node {
+	enum Type {
+		UNKNOWN,
+		PARENT,
+		LEAF
+	};
+
+	Type type;
+	bool used;
+	uint64_t address;
+
+	union {
+		struct {
+			Node* left;
+			Node* right;
+		} parent_data;
+
+		struct {
+			uint64_t face_address;
+			uint64_t face_count;
+		} leaf_data;
+	};
+};
+
+struct Reconstruction {
+	std::vector<Node> storage;
+	std::vector<Node*> parents;
+	std::vector<Node*> leafs;
+	std::unordered_map<int64_t, Node*> nodeByIndex;
+	int64_t tree_unknowns = 0;
+	int64_t tree_parents = 0;
+	int64_t tree_leafs = 0;
+
+	Node* allocateNode() {
+		if (storage.size() >= storage.capacity()) {
+			fprintf(stderr, "not enough space to allocate another node\n");
+			exit(1);
+		}
+		storage.push_back(Node{});
+		return &storage.back();
+	}
+
+	void build(AnalysisSet* analysis) {
+		storage.reserve(analysis->nodes_laa.object_count);
+
+		for (int64_t index = 0; index < static_cast<int64_t>(analysis->nodes_laa.object_count); index++) {
+			if (analysis->nodes_laa.flags[index] & LinearAccessAnalysis::ACCESSED) {
+				Node* node = allocateNode();
+				node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.object_size;
+				nodeByIndex[index] = node;
+			}
+		}
+
+		for (auto& pair : analysis->index_rla.links) {
+			if (pair.second.size() == 1) {
+				auto from_index = pair.first;
+				auto to_index = *pair.second.begin();
+
+				Node* node = nodeByIndex[from_index];
+				node->type = Node::LEAF;
+
+				int64_t end_index = to_index + 1;
+				int64_t count = static_cast<int64_t>(analysis->index_laa.object_count);
+				while (end_index < count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR)) end_index++;
+
+				node->leaf_data.face_address = analysis->index_rla.region_b->start + from_index * analysis->index_rla.object_size_b;
+				node->leaf_data.face_count = end_index - to_index;
+
+				leafs.push_back(node);
+			}
+		}
+
+		// Mark root node.
+		if (nodeByIndex.count(0)) nodeByIndex[0]->used = true;
+
+		std::vector<std::pair<int64_t, uint64_t>> children;
+		for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.object_count); parent_index++) {
+			children.clear();
+
+			for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
+				auto count = analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
+				if (count != 0) {
+					children.emplace_back(child_index, count);
+				}
+			}
+
+			if (children.empty()) continue;
+
+			Node* parent = nodeByIndex[parent_index];
+			if (parent->type != Node::UNKNOWN) continue;
+
+			std::sort(children.begin(), children.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
+				return a.second > b.second;
+			});
+
+			if (children.size() >= 2) {
+				children.resize(2);
+				if (children[1].second < children[0].second / 4) {
+					children.resize(1);
+				}
+			}
+
+			std::sort(children.begin(), children.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
+				return a.first < b.first;
+			});
+
+			parent->type = Node::PARENT;
+			Node** target = &parent->parent_data.left;
+			for (const auto& pair : children) {
+				Node* child = nodeByIndex[pair.first];
+				if (child->used) continue;
+				child->used = true;
+				*target = child;
+				if (target == &parent->parent_data.left) {
+					target = &parent->parent_data.right;
+				} else {
+					break;
+				}
+			}
+
+			parents.push_back(parent);
+		}
+
+		if (nodeByIndex.count(0)) {
+			std::vector<Node*> stack;
+			stack.push_back(nodeByIndex[0]);
+
+			while (!stack.empty()) {
+				Node* node = stack.back();
+				stack.pop_back();
+				switch (node->type) {
+					case Node::UNKNOWN:
+						tree_unknowns++;
+						break;
+
+					case Node::PARENT:
+						tree_parents++;
+						if (node->parent_data.left) stack.push_back(node->parent_data.left);
+						if (node->parent_data.right) stack.push_back(node->parent_data.right);
+						break;
+
+					case Node::LEAF:
+						tree_leafs++;
+						break;
+				}
+			}
+		}
+
+		printf("nodes: %lld\n", storage.size());
+		printf("parents: %lld\n", parents.size());
+		printf("leafs: %lld\n", leafs.size());
+
+		printf("tree_unknowns: %lld\n", tree_unknowns);
+		printf("tree_parents: %lld\n", tree_parents);
+		printf("tree_leafs: %lld\n", tree_leafs);
 	}
 };
 
 struct Workspace {
 	std::unique_ptr<Trace> trace;
 	AnalysisSet analysis;
+	Reconstruction reconstruction;
 };
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
 	ws->trace = std::move(trace);
 	ws->analysis.init(ws->trace.get());
+	ws->reconstruction.build(&ws->analysis);
 	return ws;
 }
 
@@ -1091,6 +1259,8 @@ void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 	if (ImGui::Begin(title)) {
 		static int index = 0;
 		ImGui::InputInt("index", &index);
+		if (index >= static_cast<int64_t>(this->object_count)) index = static_cast<int>(this->object_count) - 1;
+		if (index < 0) index = 0;
 
 		if (ImGui::BeginTable("Successors", 2, flags)) {
 			ImGui::TableSetupScrollFreeze(0, 1);
@@ -1204,7 +1374,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis");
 		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices");
 		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds");
-		app.workspace->analysis.laa.renderGui("Linear Access Analysis");
+		app.workspace->analysis.index_laa.renderGui("Linear Access Analysis");
 	}
 
 	if (app.demo) {
