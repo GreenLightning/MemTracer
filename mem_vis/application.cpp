@@ -791,15 +791,26 @@ struct TreeStats {
 	int32_t parents  = 0;
 	int32_t leafs    = 0;
 	int32_t total    = 0;
+	int32_t connections    = 0;
 };
 
 TreeStats countNodes(Tree* tree) {
 	TreeStats stats;
 	for (auto& node : tree->nodes) {
 		switch (node.type) {
-			case Node::UNKNOWN: stats.unknowns++; break;
-			case Node::PARENT:  stats.parents++;  break;
-			case Node::LEAF:    stats.leafs++;    break;
+			case Node::UNKNOWN:
+				stats.unknowns++;
+				break;
+
+			case Node::PARENT:
+				stats.parents++;
+				if (node.parent_data.left) stats.connections++;
+				if (node.parent_data.right) stats.connections++;
+				break;
+
+			case Node::LEAF:
+				stats.leafs++;
+				break;
 		}
 	}
 	stats.total = stats.unknowns + stats.parents + stats.leafs;
@@ -823,8 +834,14 @@ TreeStats countTree(Tree* tree) {
 
 			case Node::PARENT:
 				stats.parents++;
-				if (node->parent_data.left) stack.push_back(node->parent_data.left);
-				if (node->parent_data.right) stack.push_back(node->parent_data.right);
+				if (node->parent_data.left) {
+					stack.push_back(node->parent_data.left);
+					stats.connections++;
+				}
+				if (node->parent_data.right) {
+					stack.push_back(node->parent_data.right);
+					stats.connections++;
+				}
 				break;
 
 			case Node::LEAF:
@@ -992,9 +1009,9 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto rec_nodes = countNodes(&ws->reconstruction);
 	auto rec_tree = countTree(&ws->reconstruction);
 
-	printf("Reference:           U%05d P%05d L%05d T%05d\n", ref.unknowns, ref.parents, ref.leafs, ref.total);
-	printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d\n", rec_nodes.unknowns, rec_nodes.parents, rec_nodes.leafs, rec_nodes.total);
-	printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d\n", rec_tree.unknowns, rec_tree.parents, rec_tree.leafs, rec_tree.total);
+	printf("Reference:           U%05d P%05d L%05d T%05d C%05d\n", ref.unknowns, ref.parents, ref.leafs, ref.total, ref.connections);
+	printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d C%05d\n", rec_nodes.unknowns, rec_nodes.parents, rec_nodes.leafs, rec_nodes.total, rec_nodes.connections);
+	printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d C%05d\n", rec_tree.unknowns, rec_tree.parents, rec_tree.leafs, rec_tree.total, rec_tree.connections);
 
 	return ws;
 }
