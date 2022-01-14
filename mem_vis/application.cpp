@@ -767,7 +767,6 @@ struct Node {
 	};
 
 	Type type;
-	bool used;
 	uint64_t address;
 
 	union {
@@ -784,19 +783,59 @@ struct Node {
 };
 
 struct Tree {
-	std::vector<Node> storage;
-	std::vector<Node*> parents;
-	std::vector<Node*> leafs;
-
-	Node* allocateNode() {
-		if (storage.size() >= storage.capacity()) {
-			fprintf(stderr, "not enough space to allocate another node\n");
-			exit(1);
-		}
-		storage.push_back(Node{});
-		return &storage.back();
-	}
+	std::vector<Node> nodes;
 };
+
+struct TreeStats {
+	int32_t unknowns = 0;
+	int32_t parents  = 0;
+	int32_t leafs    = 0;
+	int32_t total    = 0;
+};
+
+TreeStats countNodes(Tree* tree) {
+	TreeStats stats;
+	for (auto& node : tree->nodes) {
+		switch (node.type) {
+			case Node::UNKNOWN: stats.unknowns++; break;
+			case Node::PARENT:  stats.parents++;  break;
+			case Node::LEAF:    stats.leafs++;    break;
+		}
+	}
+	stats.total = stats.unknowns + stats.parents + stats.leafs;
+	return stats;
+}
+
+TreeStats countTree(Tree* tree) {
+	TreeStats stats;
+
+	if (tree->nodes.empty()) return stats;
+
+	std::vector<Node*> stack;
+	stack.push_back(&tree->nodes[0]);
+	while (!stack.empty()) {
+		Node* node = stack.back();
+		stack.pop_back();
+		switch (node->type) {
+			case Node::UNKNOWN:
+				stats.unknowns++;
+				break;
+
+			case Node::PARENT:
+				stats.parents++;
+				if (node->parent_data.left) stack.push_back(node->parent_data.left);
+				if (node->parent_data.right) stack.push_back(node->parent_data.right);
+				break;
+
+			case Node::LEAF:
+				stats.leafs++;
+				break;
+		}
+	}
+
+	stats.total = stats.unknowns + stats.parents + stats.leafs;
+	return stats;
+}
 
 Tree buildReferenceTree(Trace* trace) {
 	Tree tree;
@@ -813,9 +852,9 @@ Tree buildReferenceTree(Trace* trace) {
 	int triangles_per_leaf = static_cast<int>(index_region->size / (3 * 4) / leaf_count);
 
 	int leaf_index = 0;
-	tree.storage.resize(node_count);
+	tree.nodes.resize(node_count);
 	for (int i = 0; i < node_count; i++) {
-		Node* node = &tree.storage[i];
+		Node* node = &tree.nodes[i];
 
 		uint32_t data = node_data[i];
 		uint32_t payload = data & 0x7fffffffu;
@@ -829,8 +868,8 @@ Tree buildReferenceTree(Trace* trace) {
 			node->leaf_data.face_count = payload;
 			leaf_index++;
 		} else {
-			node->parent_data.left = &tree.storage[i + 1];
-			node->parent_data.right = &tree.storage[i + payload];
+			node->parent_data.left = &tree.nodes[i + 1];
+			node->parent_data.right = &tree.nodes[i + payload];
 		}
 	}
 
@@ -841,15 +880,11 @@ Tree reconstructTree(AnalysisSet* analysis) {
 	Tree tree;
 	std::unordered_map<int64_t, Node*> nodeByIndex;
 
-	int64_t tree_unknowns = 0;
-	int64_t tree_parents = 0;
-	int64_t tree_leafs = 0;
-
-	tree.storage.reserve(analysis->nodes_laa.object_count);
-
+	tree.nodes.reserve(analysis->nodes_laa.object_count);
 	for (int64_t index = 0; index < static_cast<int64_t>(analysis->nodes_laa.object_count); index++) {
 		if (analysis->nodes_laa.flags[index] & LinearAccessAnalysis::ACCESSED) {
-			Node* node = tree.allocateNode();
+			tree.nodes.push_back(Node{});
+			Node* node = &tree.nodes.back();
 			node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.object_size;
 			nodeByIndex[index] = node;
 		}
@@ -869,13 +904,11 @@ Tree reconstructTree(AnalysisSet* analysis) {
 
 			node->leaf_data.face_address = analysis->index_rla.region_b->start + from_index * analysis->index_rla.object_size_b;
 			node->leaf_data.face_count = end_index - to_index;
-
-			tree.leafs.push_back(node);
 		}
 	}
 
-	// Mark root node.
-	if (nodeByIndex.count(0)) nodeByIndex[0]->used = true;
+	std::unordered_set<Node*> used;
+	if (!tree.nodes.empty()) used.insert(&tree.nodes[0]);
 
 	// Each node may only be used once in the tree construction (i.e. have at most one parent)
 	// to prevent forming a graph. We sort by the total number of accesses, which is a proxy
@@ -927,8 +960,8 @@ Tree reconstructTree(AnalysisSet* analysis) {
 		Node** target = &parent->parent_data.left;
 		for (const auto& pair : children) {
 			Node* child = nodeByIndex[pair.first];
-			if (child->used) continue;
-			child->used = true;
+			if (used.count(child)) continue;
+			used.insert(child);
 			*target = child;
 			if (target == &parent->parent_data.left) {
 				target = &parent->parent_data.right;
@@ -936,42 +969,7 @@ Tree reconstructTree(AnalysisSet* analysis) {
 				break;
 			}
 		}
-
-		tree.parents.push_back(parent);
 	}
-
-	if (nodeByIndex.count(0)) {
-		std::vector<Node*> stack;
-		stack.push_back(nodeByIndex[0]);
-
-		while (!stack.empty()) {
-			Node* node = stack.back();
-			stack.pop_back();
-			switch (node->type) {
-				case Node::UNKNOWN:
-					tree_unknowns++;
-					break;
-
-				case Node::PARENT:
-					tree_parents++;
-					if (node->parent_data.left) stack.push_back(node->parent_data.left);
-					if (node->parent_data.right) stack.push_back(node->parent_data.right);
-					break;
-
-				case Node::LEAF:
-					tree_leafs++;
-					break;
-			}
-		}
-	}
-
-	printf("nodes: %lld\n", tree.storage.size());
-	printf("parents: %lld\n", tree.parents.size());
-	printf("leafs: %lld\n", tree.leafs.size());
-
-	printf("tree_unknowns: %lld\n", tree_unknowns);
-	printf("tree_parents: %lld\n", tree_parents);
-	printf("tree_leafs: %lld\n", tree_leafs);
 
 	return tree;
 }
@@ -989,6 +987,15 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->analysis.init(ws->trace.get());
 	ws->reference = buildReferenceTree(ws->trace.get());
 	ws->reconstruction = reconstructTree(&ws->analysis);
+
+	auto ref = countTree(&ws->reference);
+	auto rec_nodes = countNodes(&ws->reconstruction);
+	auto rec_tree = countTree(&ws->reconstruction);
+
+	printf("Reference:           U%05d P%05d L%05d T%05d\n", ref.unknowns, ref.parents, ref.leafs, ref.total);
+	printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d\n", rec_nodes.unknowns, rec_nodes.parents, rec_nodes.leafs, rec_nodes.total);
+	printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d\n", rec_tree.unknowns, rec_tree.parents, rec_tree.leafs, rec_tree.total);
+
 	return ws;
 }
 
