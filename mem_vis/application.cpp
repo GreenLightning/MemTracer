@@ -817,6 +817,60 @@ TreeStats countTree(Tree* tree) {
 	return stats;
 }
 
+struct TreeResults {
+	int32_t parents_typed_correctly = 0;
+	int32_t leafs_typed_correctly   = 0;
+	int32_t parents_fully_correct   = 0;
+	int32_t leafs_fully_correct     = 0;
+	int32_t connections_correct     = 0;
+};
+
+TreeResults rateTree(Tree* tree, Tree* reference) {
+	TreeResults results;
+
+	std::unordered_map<uint64_t, Node*> reference_node_by_address;
+	for (auto& node : reference->nodes) {
+		reference_node_by_address[node.address] = &node;
+	}
+
+	for (int i = 0; i < tree->nodes.size(); i++) {
+		Node* node = &tree->nodes[i];
+
+		auto it = reference_node_by_address.find(node->address);
+		if (it == reference_node_by_address.end()) continue;
+		Node* ref = it->second;
+
+		switch (node->type) {
+			case Node::PARENT:
+				if (ref->type == Node::PARENT) {
+					results.parents_typed_correctly++;
+					uint64_t nl = node->parent_data.left  ? node->parent_data.left ->address : 0;
+					uint64_t nr = node->parent_data.right ? node->parent_data.right->address : 0;
+					uint64_t rl = ref->parent_data.left ->address;
+					uint64_t rr = ref->parent_data.right->address;
+					if ((nl == rl && nr == rr) || (nl == rr && nr == rl)) {
+						results.parents_fully_correct++;
+						results.connections_correct += 2;
+					} else if (nl == rl || nl == rr || nr == rl || nr == rr) {
+						results.connections_correct++;
+					}
+				}
+				break;
+
+			case Node::LEAF:
+				if (ref->type == Node::LEAF) {
+					results.leafs_typed_correctly++;
+					if (node->leaf_data.face_address == ref->leaf_data.face_address && node->leaf_data.face_count == ref->leaf_data.face_count) {
+						results.leafs_fully_correct++;
+					}
+				}
+				break;
+		}
+	}
+
+	return results;
+}
+
 // Rebuilds the tree using only nodes that are reachable from the root node.
 Tree pruneTree(Tree* source) {
 	Tree dest;
@@ -912,7 +966,7 @@ Tree reconstructTree(AnalysisSet* analysis) {
 			int64_t count = static_cast<int64_t>(analysis->index_laa.object_count);
 			while (end_index < count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR)) end_index++;
 
-			node->leaf_data.face_address = analysis->index_rla.region_b->start + from_index * analysis->index_rla.object_size_b;
+			node->leaf_data.face_address = analysis->index_rla.region_b->start + to_index * analysis->index_rla.object_size_b;
 			node->leaf_data.face_count = end_index - to_index;
 		}
 	}
@@ -1000,13 +1054,23 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->reconstruction = reconstructTree(&ws->analysis);
 	ws->prunedReconstruction = pruneTree(&ws->reconstruction);
 
-	auto ref = countTree(&ws->reference);
-	auto rec = countTree(&ws->reconstruction);
-	auto prune = countTree(&ws->prunedReconstruction);
+	{
+		auto ref = countTree(&ws->reference);
+		auto rec = countTree(&ws->reconstruction);
+		auto prune = countTree(&ws->prunedReconstruction);
 
-	printf("Reference:           U%05d P%05d L%05d T%05d C%05d\n", ref.unknowns, ref.parents, ref.leafs, ref.total, ref.connections);
-	printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d C%05d\n", rec.unknowns, rec.parents, rec.leafs, rec.total, rec.connections);
-	printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d C%05d\n", prune.unknowns, prune.parents, prune.leafs, prune.total, prune.connections);
+		printf("Reference:           U%05d P%05d L%05d T%05d C%05d\n", ref.unknowns, ref.parents, ref.leafs, ref.total, ref.connections);
+		printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d C%05d\n", rec.unknowns, rec.parents, rec.leafs, rec.total, rec.connections);
+		printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d C%05d\n", prune.unknowns, prune.parents, prune.leafs, prune.total, prune.connections);
+	}
+
+	{
+		auto rec = rateTree(&ws->reconstruction, &ws->reference);
+		auto prune = rateTree(&ws->prunedReconstruction, &ws->reference);
+
+		printf("Reconstructed Nodes: PT%05d P+%05d LT%05d L+%05d C%05d\n", rec.parents_typed_correctly, rec.parents_fully_correct, rec.leafs_typed_correctly, rec.leafs_fully_correct, rec.connections_correct);
+		printf("Reconstructed Tree:  PT%05d P+%05d LT%05d L+%05d C%05d\n", prune.parents_typed_correctly, prune.parents_fully_correct, prune.leafs_typed_correctly, prune.leafs_fully_correct, prune.connections_correct);
+	}
 
 	return ws;
 }
