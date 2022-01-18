@@ -33,6 +33,17 @@ struct TraceInstruction {
 	uint64_t    mem_region_id = UINT64_MAX;
 };
 
+struct TraceRegion {
+	uint64_t grid_launch_id;
+	uint64_t mem_region_id;
+	uint64_t start;
+	uint64_t size;
+	uint64_t contents_offset;
+
+	uint64_t object_size;
+	uint64_t object_count;
+};
+
 struct Trace {
 	std::string filename;
 	mio::mmap_source mmap;
@@ -40,6 +51,7 @@ struct Trace {
 	std::vector<std::string> strings;
 	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
 	std::vector<TraceInstruction> instructions;
+	std::vector<TraceRegion> regions;
 	std::vector<mem_access_t> accesses;
 
 	~Trace() {
@@ -48,9 +60,9 @@ struct Trace {
 
 	void renderGuiInWindow();
 
-	mem_region_t* find_mem_region(uint64_t grid_launch_id, uint64_t mem_region_id) {
-		for (int i = 0; i < header.mem_region_count; i++) {
-			mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
+	TraceRegion* find_region(uint64_t grid_launch_id, uint64_t mem_region_id) {
+		for (int i = 0; i < regions.size(); i++) {
+			TraceRegion* region = &regions[i];
 			if (region->grid_launch_id == grid_launch_id && region->mem_region_id == mem_region_id) {
 				return region;
 			}
@@ -108,9 +120,9 @@ struct Trace {
 			header.strings_size >= mmap.size() ||
 			header.strings_offset + header.strings_size > mmap.size() ||
 			(header.strings_size != 0 && mmap[header.strings_offset + header.strings_size - 1] != 0)
-		) return "invalid file (strings section)";
+			) return "invalid file (strings section)";
 
-		uint64_t string_start = header.strings_offset;
+			uint64_t string_start = header.strings_offset;
 		for (uint64_t i = 0; i < header.strings_size; i++) {
 			if (mmap[header.strings_offset + i] == 0) {
 				strings.push_back(std::string(&mmap[string_start], &mmap[header.strings_offset + i]));
@@ -169,6 +181,21 @@ struct Trace {
 		for (uint64_t i = 0; i < instructions.size(); i++) {
 			instructions[i].index = i;
 			instructionsByAddr[instructions[i].instr_addr].index = i;
+		}
+
+		// TRACE REGIONS
+
+		regions.reserve(header.mem_region_count);
+		for (int i = 0; i < header.mem_region_count; i++) {
+			mem_region_t* mem_region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
+
+			TraceRegion trace_region;
+			trace_region.grid_launch_id = mem_region->grid_launch_id;
+			trace_region.mem_region_id = mem_region->mem_region_id;
+			trace_region.start = mem_region->start;
+			trace_region.size = mem_region->size;
+			trace_region.contents_offset = mem_region->contents_offset;
+			regions.push_back(trace_region);
 		}
 
 		// SORTING
@@ -281,11 +308,7 @@ struct LinearAccessAnalysis {
 		LINEAR   = 0x02,
 	};
 
-	uint64_t grid_launch_id;
-	uint64_t mem_region_id;
-	mem_region_t* region;
-	uint64_t object_size;
-	uint64_t object_count;
+	TraceRegion* region;
 	std::vector<uint8_t> flags;
 
 	void run(Trace* trace);
@@ -299,13 +322,13 @@ void LinearAccessAnalysis::run(Trace* trace) {
 	int32_t last_local_warp_id = -1;
 	int64_t last_access[32];
 
-	this->flags.resize(this->object_count);
+	this->flags.resize(this->region->object_count);
 
 	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->region->grid_launch_id) i++;
 	for (; i < trace->accesses.size(); i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->grid_launch_id) break;
+		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -319,10 +342,10 @@ void LinearAccessAnalysis::run(Trace* trace) {
 		}
 
 		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id != this->mem_region_id) continue;
+		if (instr.mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
-			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->object_size;
+			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
 			if (access >= 0) {
 				this->flags[access] |= ACCESSED;
 				if (last_access[i] >= 0 && access == last_access[i] + 1) {
@@ -335,11 +358,7 @@ void LinearAccessAnalysis::run(Trace* trace) {
 }
 
 struct ConsecutiveAccessAnalysis {
-	uint64_t grid_launch_id;
-	uint64_t mem_region_id;
-	mem_region_t* region;
-	uint64_t object_size;
-	uint64_t object_count;
+	TraceRegion* region;
 	std::vector<uint64_t> matrix;
 
 	void run(Trace* trace);
@@ -353,13 +372,13 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 	int32_t last_local_warp_id = -1;
 	int64_t last_access[32];
 
-	matrix.resize(this->object_count * this->object_count);
+	matrix.resize(this->region->object_count * this->region->object_count);
 
 	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->region->grid_launch_id) i++;
 	for (; i < trace->accesses.size(); i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->grid_launch_id) break;
+		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -373,12 +392,12 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 		}
 
 		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id != this->mem_region_id) continue;
+		if (instr.mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
-			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->object_size;
+			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
 			if (last_access[i] >= 0 && access >= 0) {
-				this->matrix[last_access[i] * this->object_count + access]++;
+				this->matrix[last_access[i] * this->region->object_count + access]++;
 			}
 			last_access[i] = access;
 		}
@@ -386,15 +405,8 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 }
 
 struct RegionLinkAnalysis {
-	uint64_t grid_launch_id;
-	uint64_t region_id_a;
-	uint64_t region_id_b;
-	mem_region_t* region_a;
-	mem_region_t* region_b;
-	uint64_t object_size_a;
-	uint64_t object_size_b;
-	uint64_t object_count_a;
-	uint64_t object_count_b;
+	TraceRegion* region_a;
+	TraceRegion* region_b;
 	std::map<int64_t, std::set<int64_t>> links;
 
 	void run(Trace* trace);
@@ -402,6 +414,8 @@ struct RegionLinkAnalysis {
 };
 
 void RegionLinkAnalysis::run(Trace* trace) {
+	uint64_t grid_launch_id = this->region_a->grid_launch_id;
+
 	int32_t last_block_idx_z = -1;
 	int32_t last_block_idx_y = -1;
 	int32_t last_block_idx_x = -1;
@@ -409,10 +423,10 @@ void RegionLinkAnalysis::run(Trace* trace) {
 	int64_t last_access[32];
 
 	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != grid_launch_id) i++;
 	for (; i < trace->accesses.size(); i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->grid_launch_id) break;
+		if (ma->grid_launch_id != grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -426,13 +440,13 @@ void RegionLinkAnalysis::run(Trace* trace) {
 		}
 
 		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id == this->region_id_a) {
+		if (instr.mem_region_id == this->region_a->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
-				last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_a->start) / this->object_size_a;
+				last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_a->start) / this->region_a->object_size;
 			}
-		} else if (instr.mem_region_id == this->region_id_b) {
+		} else if (instr.mem_region_id == this->region_b->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
-				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_b->start) / this->object_size_b;
+				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_b->start) / this->region_b->object_size;
 				if (last_access[i] >= 0 && access >= 0) {
 					this->links[last_access[i]].insert(access);
 				}
@@ -454,11 +468,11 @@ struct CaaDistributionAnalysis {
 
 	void run() {
 		std::vector<uint64_t> counts;
-		for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(caa->object_count); parent_index++) {
+		for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(caa->region->object_count); parent_index++) {
 			counts.clear();
 
-			for (int64_t child_index = 0; child_index < static_cast<int64_t>(caa->object_count); child_index++) {
-				auto count = caa->matrix[parent_index * caa->object_count + child_index];
+			for (int64_t child_index = 0; child_index < static_cast<int64_t>(caa->region->object_count); child_index++) {
+				auto count = caa->matrix[parent_index * caa->region->object_count + child_index];
 				if (count != 0) counts.emplace_back(count);
 			}
 
@@ -708,50 +722,39 @@ struct AnalysisSet {
 	CaaDistributionAnalysis caada;
 
 	void init(Trace* trace) {
-		ibsa.grid_launch_id = 0;
+		uint64_t grid_launch_id = 0;
+
+		ibsa.grid_launch_id = grid_launch_id;
 		ibsa.run(trace);
 
-		caa.grid_launch_id = 0;
-		caa.mem_region_id = 1;
-		caa.region = trace->find_mem_region(caa.grid_launch_id, caa.mem_region_id);
-		caa.object_size = 4;
-		caa.object_count = caa.region->size / caa.object_size;
+		// Set object sizes.
+		TraceRegion* node_region = trace->find_region(grid_launch_id, 1);
+		node_region->object_size = 4;
+		node_region->object_count = node_region->size / node_region->object_size;
+
+		TraceRegion* bounds_region = trace->find_region(grid_launch_id, 2);
+		bounds_region->object_size = 6 * 4;
+		bounds_region->object_count = bounds_region->size / bounds_region->object_size;
+
+		TraceRegion* index_region = trace->find_region(grid_launch_id, 3);
+		index_region->object_size = 3 * 4;
+		index_region->object_count = index_region->size / index_region->object_size;
+
+		caa.region = node_region;
 		caa.run(trace);
 
-		index_rla.grid_launch_id = 0;
-		index_rla.region_id_a = 1;
-		index_rla.region_id_b = 3;
-		index_rla.region_a = trace->find_mem_region(index_rla.grid_launch_id, index_rla.region_id_a);
-		index_rla.region_b = trace->find_mem_region(index_rla.grid_launch_id, index_rla.region_id_b);
-		index_rla.object_size_a = 4;
-		index_rla.object_size_b = 12;
-		index_rla.object_count_a = index_rla.region_a->size / index_rla.object_size_a;
-		index_rla.object_count_b = index_rla.region_b->size / index_rla.object_size_b;
+		index_rla.region_a = node_region;
+		index_rla.region_b = index_region;
 		index_rla.run(trace);
 
-		bounds_rla.grid_launch_id = 0;
-		bounds_rla.region_id_a = 1;
-		bounds_rla.region_id_b = 2;
-		bounds_rla.region_a = trace->find_mem_region(bounds_rla.grid_launch_id, bounds_rla.region_id_a);
-		bounds_rla.region_b = trace->find_mem_region(bounds_rla.grid_launch_id, bounds_rla.region_id_b);
-		bounds_rla.object_size_a = 4;
-		bounds_rla.object_size_b = 6 * 4;
-		bounds_rla.object_count_a = bounds_rla.region_a->size / bounds_rla.object_size_a;
-		bounds_rla.object_count_b = bounds_rla.region_b->size / bounds_rla.object_size_b;
+		bounds_rla.region_a = node_region;
+		bounds_rla.region_b = bounds_region;
 		bounds_rla.run(trace);
 
-		nodes_laa.grid_launch_id = 0;
-		nodes_laa.mem_region_id = 1;
-		nodes_laa.region = trace->find_mem_region(nodes_laa.grid_launch_id, nodes_laa.mem_region_id);
-		nodes_laa.object_size = 4;
-		nodes_laa.object_count = nodes_laa.region->size / nodes_laa.object_size;
+		nodes_laa.region = node_region;
 		nodes_laa.run(trace);
 
-		index_laa.grid_launch_id = 0;
-		index_laa.mem_region_id = 3;
-		index_laa.region = trace->find_mem_region(index_laa.grid_launch_id, index_laa.mem_region_id);
-		index_laa.object_size = 12;
-		index_laa.object_count = index_laa.region->size / index_laa.object_size;
+		index_laa.region = index_region;
 		index_laa.run(trace);
 
 		caada.caa = &caa;
@@ -799,18 +802,18 @@ TreeStats countTree(Tree* tree) {
 	for (auto& node : tree->nodes) {
 		switch (node.type) {
 			case Node::UNKNOWN:
-				stats.unknowns++;
-				break;
+			stats.unknowns++;
+			break;
 
 			case Node::PARENT:
-				stats.parents++;
-				if (node.parent_data.left) stats.connections++;
-				if (node.parent_data.right) stats.connections++;
-				break;
+			stats.parents++;
+			if (node.parent_data.left) stats.connections++;
+			if (node.parent_data.right) stats.connections++;
+			break;
 
 			case Node::LEAF:
-				stats.leafs++;
-				break;
+			stats.leafs++;
+			break;
 		}
 	}
 	stats.total = stats.unknowns + stats.parents + stats.leafs;
@@ -842,29 +845,29 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 
 		switch (node->type) {
 			case Node::PARENT:
-				if (ref->type == Node::PARENT) {
-					results.parents_typed_correctly++;
-					uint64_t nl = node->parent_data.left  ? node->parent_data.left ->address : 0;
-					uint64_t nr = node->parent_data.right ? node->parent_data.right->address : 0;
-					uint64_t rl = ref->parent_data.left ->address;
-					uint64_t rr = ref->parent_data.right->address;
-					if ((nl == rl && nr == rr) || (nl == rr && nr == rl)) {
-						results.parents_fully_correct++;
-						results.connections_correct += 2;
-					} else if (nl == rl || nl == rr || nr == rl || nr == rr) {
-						results.connections_correct++;
-					}
+			if (ref->type == Node::PARENT) {
+				results.parents_typed_correctly++;
+				uint64_t nl = node->parent_data.left  ? node->parent_data.left ->address : 0;
+				uint64_t nr = node->parent_data.right ? node->parent_data.right->address : 0;
+				uint64_t rl = ref->parent_data.left ->address;
+				uint64_t rr = ref->parent_data.right->address;
+				if ((nl == rl && nr == rr) || (nl == rr && nr == rl)) {
+					results.parents_fully_correct++;
+					results.connections_correct += 2;
+				} else if (nl == rl || nl == rr || nr == rl || nr == rr) {
+					results.connections_correct++;
 				}
-				break;
+			}
+			break;
 
 			case Node::LEAF:
-				if (ref->type == Node::LEAF) {
-					results.leafs_typed_correctly++;
-					if (node->leaf_data.face_address == ref->leaf_data.face_address && node->leaf_data.face_count == ref->leaf_data.face_count) {
-						results.leafs_fully_correct++;
-					}
+			if (ref->type == Node::LEAF) {
+				results.leafs_typed_correctly++;
+				if (node->leaf_data.face_address == ref->leaf_data.face_address && node->leaf_data.face_count == ref->leaf_data.face_count) {
+					results.leafs_fully_correct++;
 				}
-				break;
+			}
+			break;
 		}
 	}
 
@@ -907,8 +910,8 @@ Tree buildReferenceTree(Trace* trace) {
 	// Check if trace contains memory contents.
 	if (!trace->header.mem_contents_offset) return tree;
 
-	mem_region_t* node_region = trace->find_mem_region(0, 1);
-	mem_region_t* index_region = trace->find_mem_region(0, 3);
+	TraceRegion* node_region = trace->find_region(0, 1);
+	TraceRegion* index_region = trace->find_region(0, 3);
 
 	uint32_t* node_data = (uint32_t*) &trace->mmap[trace->header.mem_contents_offset + node_region->contents_offset];
 	int node_count = static_cast<int>(node_region->size / 4);
@@ -944,12 +947,12 @@ Tree reconstructTree(AnalysisSet* analysis) {
 	Tree tree;
 	std::unordered_map<int64_t, Node*> nodeByIndex;
 
-	tree.nodes.reserve(analysis->nodes_laa.object_count);
-	for (int64_t index = 0; index < static_cast<int64_t>(analysis->nodes_laa.object_count); index++) {
+	tree.nodes.reserve(analysis->nodes_laa.region->object_count);
+	for (int64_t index = 0; index < static_cast<int64_t>(analysis->nodes_laa.region->object_count); index++) {
 		if (analysis->nodes_laa.flags[index] & LinearAccessAnalysis::ACCESSED) {
 			tree.nodes.push_back(Node{});
 			Node* node = &tree.nodes.back();
-			node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.object_size;
+			node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.region->object_size;
 			nodeByIndex[index] = node;
 		}
 	}
@@ -963,10 +966,10 @@ Tree reconstructTree(AnalysisSet* analysis) {
 			node->type = Node::LEAF;
 
 			int64_t end_index = to_index + 1;
-			int64_t count = static_cast<int64_t>(analysis->index_laa.object_count);
+			int64_t count = static_cast<int64_t>(analysis->index_laa.region->object_count);
 			while (end_index < count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR)) end_index++;
 
-			node->leaf_data.face_address = analysis->index_rla.region_b->start + to_index * analysis->index_rla.object_size_b;
+			node->leaf_data.face_address = analysis->index_rla.region_b->start + to_index * analysis->index_rla.region_b->object_size;
 			node->leaf_data.face_count = end_index - to_index;
 		}
 	}
@@ -979,10 +982,10 @@ Tree reconstructTree(AnalysisSet* analysis) {
 	// for our confidence in the relation, to form connections we are more confident of first.
 
 	std::vector<std::pair<int64_t, uint64_t>> totals; // (parent_index, total)
-	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.object_count); parent_index++) {
+	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.region->object_count); parent_index++) {
 		uint64_t total = 0;
-		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
-			total += analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
+		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.region->object_count); child_index++) {
+			total += analysis->caa.matrix[parent_index * analysis->caa.region->object_count + child_index];
 		}
 		if (total) {
 			totals.emplace_back(parent_index, total);
@@ -999,8 +1002,8 @@ Tree reconstructTree(AnalysisSet* analysis) {
 
 		children.clear();
 
-		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.object_count); child_index++) {
-			auto count = analysis->caa.matrix[parent_index * analysis->caa.object_count + child_index];
+		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.region->object_count); child_index++) {
+			auto count = analysis->caa.matrix[parent_index * analysis->caa.region->object_count + child_index];
 			if (count != 0) {
 				children.emplace_back(child_index, count);
 			}
@@ -1339,7 +1342,7 @@ void Grid::renderGui() {
 					snprintf(label, sizeof(label), "%d", row);
 					ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
 					bool selected = app.selected_instr_addr == instr.instr_addr ||
-						(app.selected_instr_addr == UINT64_MAX && app.selected_mem_region_id != UINT64_MAX && app.selected_mem_region_id == instr.mem_region_id);
+					(app.selected_instr_addr == UINT64_MAX && app.selected_mem_region_id != UINT64_MAX && app.selected_mem_region_id == instr.mem_region_id);
 					if (ImGui::Selectable(label, selected, selectable_flags)) {
 						app.selected_instr_addr = instr.instr_addr;
 						app.selected_mem_region_id = instr.mem_region_id;
@@ -1351,7 +1354,7 @@ void Grid::renderGui() {
 					} else {
 						ImGui::Text("0x%016lx", instr.instr_addr);
 					}
-				
+
 					ImGui::TableNextColumn();
 					ImGui::Text("%s", instr.opcode.c_str());
 					ImGui::TableNextColumn();
@@ -1404,8 +1407,8 @@ void LinearAccessAnalysis::renderGui(const char* title) {
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
 	if (ImGui::Begin(title)) {
-		ImGui::Text("Region: %llu", this->mem_region_id);
-		ImGui::Text("Objects: %llu * %llu bytes", this->object_count, this->object_size);
+		ImGui::Text("Region: %llu", this->region->mem_region_id);
+		ImGui::Text("Objects: %llu * %llu bytes", this->region->object_count, this->region->object_size);
 
 		if (ImGui::BeginTable("Stats", 3, flags)) {
 			ImGui::TableSetupScrollFreeze(0, 1);
@@ -1442,7 +1445,7 @@ void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 	if (ImGui::Begin(title)) {
 		static int index = 0;
 		ImGui::InputInt("index", &index);
-		if (index >= static_cast<int64_t>(this->object_count)) index = static_cast<int>(this->object_count) - 1;
+		if (index >= static_cast<int64_t>(this->region->object_count)) index = static_cast<int>(this->region->object_count) - 1;
 		if (index < 0) index = 0;
 
 		if (ImGui::BeginTable("Successors", 2, flags)) {
@@ -1451,8 +1454,8 @@ void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 			ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
 			ImGui::TableHeadersRow();
 
-			for (int i = 0; i < this->object_count; i++) {
-				auto count = this->matrix[index * this->object_count + i];
+			for (int i = 0; i < this->region->object_count; i++) {
+				auto count = this->matrix[index * this->region->object_count + i];
 				if (count != 0) {
 					ImGui::TableNextRow();
 					ImGui::TableNextColumn();
