@@ -404,6 +404,90 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 	}
 }
 
+struct StackAnalysis {
+	TraceRegion* region;
+	std::vector<uint64_t> matrix;
+
+	void run(Trace* trace);
+	void renderGui(const char* title);
+};
+
+void StackAnalysis::run(Trace* trace) {
+	int32_t last_block_idx_z = -1;
+	int32_t last_block_idx_y = -1;
+	int32_t last_block_idx_x = -1;
+	int32_t last_local_warp_id = -1;
+	int32_t instr_indices[32];
+	int64_t last_access[32];
+	std::unordered_map<uint64_t, int64_t> stack_maps[32];
+
+	matrix.resize(this->region->object_count * this->region->object_count);
+
+	int i = 0;
+	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->region->grid_launch_id) i++;
+	for (; i < trace->accesses.size(); i++) {
+		mem_access_t* ma = &trace->accesses[i];
+		if (ma->grid_launch_id != this->region->grid_launch_id) break;
+
+		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+			last_block_idx_z = ma->block_idx_z;
+			last_block_idx_y = ma->block_idx_y;
+			last_block_idx_x = ma->block_idx_x;
+			last_local_warp_id = ma->local_warp_id;
+
+			for (int i = 0; i < 32; i++) {
+				instr_indices[i] = 0;
+				last_access[i] = -1;
+				stack_maps[i].clear();
+			}
+		}
+
+		defer {
+			for (int i = 0; i < 32; i++) {
+				if (ma->addrs[i] != 0) {
+					instr_indices[i]++;
+				}
+			}
+		};
+
+		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
+
+		if (instr.opcode == "STL.128") {
+			for (int i = 0; i < 32; i++) {
+				uint64_t stack_addr = ma->addrs[i];
+				if (!stack_addr) continue;
+				stack_maps[i][stack_addr] = last_access[i];
+			}
+			continue;
+		}
+
+		if (instr.opcode == "LDL.128") {
+			for (int i = 0; i < 32; i++) {
+				uint64_t stack_addr = ma->addrs[i];
+				if (!stack_addr) continue;
+				auto it = stack_maps[i].find(stack_addr);
+				if (it == stack_maps[i].end()) {
+					last_access[i] = -1;
+				} else {
+					last_access[i] = it->second;
+					stack_maps[i].erase(it);
+				}
+			}
+			continue;
+		}
+
+		if (instr.mem_region_id != this->region->mem_region_id) continue;
+
+		for (int i = 0; i < 32; i++) {
+			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
+			if (last_access[i] >= 0 && access >= 0) {
+				this->matrix[last_access[i] * this->region->object_count + access]++;
+			}
+			last_access[i] = access;
+		}
+	}
+}
+
 struct RegionLinkAnalysis {
 	TraceRegion* region_a;
 	TraceRegion* region_b;
@@ -715,6 +799,7 @@ struct Grid {
 struct AnalysisSet {
 	InstructionBasedSizeAnalysis ibsa;
 	ConsecutiveAccessAnalysis caa;
+	StackAnalysis sa;
 	RegionLinkAnalysis index_rla;
 	RegionLinkAnalysis bounds_rla;
 	LinearAccessAnalysis nodes_laa;
@@ -742,6 +827,9 @@ struct AnalysisSet {
 
 		caa.region = node_region;
 		caa.run(trace);
+
+		sa.region = node_region;
+		sa.run(trace);
 
 		index_rla.region_a = node_region;
 		index_rla.region_b = index_region;
@@ -943,7 +1031,8 @@ Tree buildReferenceTree(Trace* trace) {
 	return tree;
 }
 
-Tree reconstructTree(AnalysisSet* analysis) {
+template <typename T>
+Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 	Tree tree;
 	std::unordered_map<int64_t, Node*> nodeByIndex;
 
@@ -982,10 +1071,10 @@ Tree reconstructTree(AnalysisSet* analysis) {
 	// for our confidence in the relation, to form connections we are more confident of first.
 
 	std::vector<std::pair<int64_t, uint64_t>> totals; // (parent_index, total)
-	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(analysis->caa.region->object_count); parent_index++) {
+	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(node_analysis->region->object_count); parent_index++) {
 		uint64_t total = 0;
-		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.region->object_count); child_index++) {
-			total += analysis->caa.matrix[parent_index * analysis->caa.region->object_count + child_index];
+		for (int64_t child_index = 0; child_index < static_cast<int64_t>(node_analysis->region->object_count); child_index++) {
+			total += node_analysis->matrix[parent_index * node_analysis->region->object_count + child_index];
 		}
 		if (total) {
 			totals.emplace_back(parent_index, total);
@@ -1002,8 +1091,8 @@ Tree reconstructTree(AnalysisSet* analysis) {
 
 		children.clear();
 
-		for (int64_t child_index = 0; child_index < static_cast<int64_t>(analysis->caa.region->object_count); child_index++) {
-			auto count = analysis->caa.matrix[parent_index * analysis->caa.region->object_count + child_index];
+		for (int64_t child_index = 0; child_index < static_cast<int64_t>(node_analysis->region->object_count); child_index++) {
+			auto count = node_analysis->matrix[parent_index * node_analysis->region->object_count + child_index];
 			if (count != 0) {
 				children.emplace_back(child_index, count);
 			}
@@ -1047,6 +1136,8 @@ struct Workspace {
 	Tree reference;
 	Tree reconstruction;
 	Tree prunedReconstruction;
+	Tree preciseReconstruction;
+	Tree prunedPreciseReconstruction;
 };
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
@@ -1054,25 +1145,44 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->trace = std::move(trace);
 	ws->analysis.init(ws->trace.get());
 	ws->reference = buildReferenceTree(ws->trace.get());
-	ws->reconstruction = reconstructTree(&ws->analysis);
+	ws->reconstruction = reconstructTree(&ws->analysis, &ws->analysis.caa);
 	ws->prunedReconstruction = pruneTree(&ws->reconstruction);
+	ws->preciseReconstruction = reconstructTree(&ws->analysis, &ws->analysis.sa);
+	ws->prunedPreciseReconstruction = pruneTree(&ws->preciseReconstruction);
 
 	{
-		auto ref = countTree(&ws->reference);
-		auto rec = countTree(&ws->reconstruction);
-		auto prune = countTree(&ws->prunedReconstruction);
+		TreeStats s;
+		
+		s = countTree(&ws->reference);
+		printf("Reference:           U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
 
-		printf("Reference:           U%05d P%05d L%05d T%05d C%05d\n", ref.unknowns, ref.parents, ref.leafs, ref.total, ref.connections);
-		printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d C%05d\n", rec.unknowns, rec.parents, rec.leafs, rec.total, rec.connections);
-		printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d C%05d\n", prune.unknowns, prune.parents, prune.leafs, prune.total, prune.connections);
+		s = countTree(&ws->reconstruction);
+		printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		
+		s = countTree(&ws->prunedReconstruction);
+		printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+
+		s = countTree(&ws->preciseReconstruction);
+		printf("Precise Nodes:       U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		
+		s = countTree(&ws->prunedPreciseReconstruction);
+		printf("Precise Tree:        U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
 	}
 
 	{
-		auto rec = rateTree(&ws->reconstruction, &ws->reference);
-		auto prune = rateTree(&ws->prunedReconstruction, &ws->reference);
+		TreeResults r;
 
-		printf("Reconstructed Nodes: PT%05d P+%05d LT%05d L+%05d C%05d\n", rec.parents_typed_correctly, rec.parents_fully_correct, rec.leafs_typed_correctly, rec.leafs_fully_correct, rec.connections_correct);
-		printf("Reconstructed Tree:  PT%05d P+%05d LT%05d L+%05d C%05d\n", prune.parents_typed_correctly, prune.parents_fully_correct, prune.leafs_typed_correctly, prune.leafs_fully_correct, prune.connections_correct);
+		r = rateTree(&ws->reconstruction, &ws->reference);
+		printf("Reconstructed Nodes: PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+		
+		r = rateTree(&ws->prunedReconstruction, &ws->reference);
+		printf("Reconstructed Tree:  PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+
+		r = rateTree(&ws->preciseReconstruction, &ws->reference);
+		printf("Precise Nodes:       PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+		
+		r = rateTree(&ws->prunedPreciseReconstruction, &ws->reference);
+		printf("Precise Tree:        PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
 	}
 
 	return ws;
@@ -1470,6 +1580,39 @@ void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
+void StackAnalysis::renderGui(const char* title) {
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title)) {
+		static int index = 0;
+		ImGui::InputInt("index", &index);
+		if (index >= static_cast<int64_t>(this->region->object_count)) index = static_cast<int>(this->region->object_count) - 1;
+		if (index < 0) index = 0;
+
+		if (ImGui::BeginTable("Successors", 2, flags)) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			for (int i = 0; i < this->region->object_count; i++) {
+				auto count = this->matrix[index * this->region->object_count + i];
+				if (count != 0) {
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", i);
+					ImGui::TableNextColumn();
+					ImGui::Text("%d", count);
+				}
+			}
+			ImGui::EndTable();
+		}
+	}
+	ImGui::End();
+}
+
 void RegionLinkAnalysis::renderGui(const char* title) {
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
@@ -1570,6 +1713,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	if (app.workspace) {
 		app.workspace->analysis.ibsa.renderGui("Instruction Based Size Analysis");
 		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis");
+		app.workspace->analysis.sa.renderGui("Stack Analysis");
 		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices");
 		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds");
 		app.workspace->analysis.index_laa.renderGui("Linear Access Analysis");
