@@ -1150,39 +1150,40 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->preciseReconstruction = reconstructTree(&ws->analysis, &ws->analysis.sa);
 	ws->prunedPreciseReconstruction = pruneTree(&ws->preciseReconstruction);
 
+	TreeStats ref = countTree(&ws->reference);
 	{
 		TreeStats s;
 		
 		s = countTree(&ws->reference);
-		printf("Reference:           U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		printf("Reference:           U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
 
 		s = countTree(&ws->reconstruction);
-		printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
 		
 		s = countTree(&ws->prunedReconstruction);
-		printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
 
 		s = countTree(&ws->preciseReconstruction);
-		printf("Precise Nodes:       U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		printf("Precise Nodes:       U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
 		
 		s = countTree(&ws->prunedPreciseReconstruction);
-		printf("Precise Tree:        U%05d P%05d L%05d T%05d C%05d\n", s.unknowns, s.parents, s.leafs, s.total, s.connections);
+		printf("Precise Tree:        U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
 	}
 
 	{
 		TreeResults r;
 
 		r = rateTree(&ws->reconstruction, &ws->reference);
-		printf("Reconstructed Nodes: PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+		printf("Reconstructed Nodes: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 		
 		r = rateTree(&ws->prunedReconstruction, &ws->reference);
-		printf("Reconstructed Tree:  PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+		printf("Reconstructed Tree:  PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 
 		r = rateTree(&ws->preciseReconstruction, &ws->reference);
-		printf("Precise Nodes:       PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+		printf("Precise Nodes:       PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 		
 		r = rateTree(&ws->prunedPreciseReconstruction, &ws->reference);
-		printf("Precise Tree:        PT%05d P+%05d LT%05d L+%05d C%05d\n", r.parents_typed_correctly, r.parents_fully_correct, r.leafs_typed_correctly, r.leafs_fully_correct, r.connections_correct);
+		printf("Precise Tree:        PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 	}
 
 	return ws;
