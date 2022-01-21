@@ -2,6 +2,39 @@
 
 #include "config.h"
 
+float as_float(const toml::value& value) {
+	if (value.is_integer()) return static_cast<float>(value.as_integer(std::nothrow));
+	return static_cast<float>(value.as_floating());
+}
+
+Camera loadCamera(const toml::value& camera) {
+	Camera cam;
+
+	if (camera.contains("position")) {
+		auto position = toml::find(camera, "position");
+		if (!position.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", position, "here"));
+		if (position.size() != 3) throw std::runtime_error(toml::format_error("[error] position should have three elements", position, "here"));
+		cam.x = as_float(toml::find(position, 0));
+		cam.y = as_float(toml::find(position, 1));
+		cam.z = as_float(toml::find(position, 2));
+	}
+
+	if (camera.contains("matrix")) {
+		auto matrix = toml::find(camera, "matrix");
+		if (!matrix.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", matrix, "here"));
+		if (matrix.size() != 9) throw std::runtime_error(toml::format_error("[error] matrix should have 9 elements", matrix, "here"));
+		for (int i = 0; i < 9; i++) {
+			cam.mat[i] = as_float(toml::find(matrix, i));
+		}
+	}
+
+	if (camera.contains("vertical_fov")) {
+		cam.vertical_fov = as_float(toml::find(camera, "vertical_fov"));
+	}
+
+	return cam;
+}
+
 void loadConfiguration(Configuration& config, const std::string& path) {
 	auto data = toml::parse(path);
 
@@ -73,31 +106,15 @@ void loadConfiguration(Configuration& config, const std::string& path) {
 
 	if (data.contains("camera")) {
 		auto camera = toml::find(data, "camera");
-
-		if (camera.contains("position")) {
-			auto position = toml::find(camera, "position");
-			if (!position.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", position, "here"));
-			if (position.size() != 3) throw std::runtime_error(toml::format_error("[error] position should have three elements", position, "here"));
-			float* pos = &config.camera.x;
-			for (int i = 0; i < 3; i++) {
-				auto value = toml::find(position, i);
-				pos[i] = value.is_floating() ? static_cast<float>(value.as_floating(std::nothrow)) : static_cast<float>(value.as_integer());
+		if (camera.is_table()) {
+			Camera cam = loadCamera(camera);
+			config.cameras.push_back(cam);
+		} else {
+			const auto cameras = toml::get<std::vector<toml::table>>(camera);
+			for (const auto& camera : cameras) {
+				Camera cam = loadCamera(camera);
+				config.cameras.push_back(cam);
 			}
-		}
-
-		if (camera.contains("matrix")) {
-			auto matrix = toml::find(camera, "matrix");
-			if (!matrix.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", matrix, "here"));
-			if (matrix.size() != 9) throw std::runtime_error(toml::format_error("[error] matrix should have 9 elements", matrix, "here"));
-			for (int i = 0; i < 9; i++) {
-				auto value = toml::find(matrix, i);
-				config.camera.mat[i] = value.is_floating() ? static_cast<float>(value.as_floating(std::nothrow)) : static_cast<float>(value.as_integer());
-			}
-		}
-
-		if (camera.contains("vertical_fov")) {
-			auto value = toml::find(camera, "vertical_fov");
-			config.camera.vertical_fov = value.is_floating() ? static_cast<float>(value.as_floating(std::nothrow)) : static_cast<float>(value.as_integer());
 		}
 	}
 

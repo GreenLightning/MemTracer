@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 enum Shading {
 	SMOOTH, FLAT
@@ -23,7 +24,7 @@ struct Configuration {
 	Shading shading = SMOOTH;
 	bool shadows = false;
 	std::string heuristic;
-	Camera camera;
+	std::vector<Camera> cameras;
 	Light light;
 };
 

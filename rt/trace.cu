@@ -406,17 +406,17 @@ void my_synchronize() {
 }
 
 void run(Configuration& config) {
-	std::chrono::high_resolution_clock::time_point ts[32];
-	int ti = 0;
+	std::vector<std::chrono::high_resolution_clock::time_point> ts;
+	ts.reserve(200);
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+	ts.push_back(std::chrono::high_resolution_clock::now());
 
 	std::cout << "Loading mesh..." << std::endl;
 	Mesh mesh = loadMesh(config.input);
 	mesh.compute_normals();
 	std::cout << "Mesh: " << mesh.faces.size() << " faces; " << mesh.vertices.size() << " vertices" << std::endl;
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+	ts.push_back(std::chrono::high_resolution_clock::now());
 
 	std::cout << "Computing AABBs..." << std::endl;
 	std::vector<AABB> aabbs(mesh.faces.size());
@@ -436,14 +436,14 @@ void run(Configuration& config) {
 		centers[i] = (v0.position + v1.position + v2.position) / 3.0f;
 	}
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+	ts.push_back(std::chrono::high_resolution_clock::now());
 
 	std::cout << "Building BVH..." << std::endl;
 	Heuristic heuristic = parseHeuristic(config.heuristic);
 	BVH bvh = constructBVH(aabbs, centers, 32, heuristic);
 	std::cout << "BVH: " << bvh.nodes.size() << " nodes; " << bvh.bounds.size() << " aabbs; " << bvh.primitives.size() << " primitives; " << bvh.depth << " max depth" << std::endl;
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+	ts.push_back(std::chrono::high_resolution_clock::now());
 
 	std::cout << "Rearranging data..." << std::endl;
 	std::vector<Face> bvhFaces(bvh.primitives.size());
@@ -452,7 +452,7 @@ void run(Configuration& config) {
 
 	for (int i = 0; i < bvh.primitives.size(); i++) {
 		uint32_t sourceIndex = bvh.primitives[i];
-		bvhFaces[i] = (sourceIndex == -1u) ? Face() : mesh.faces[sourceIndex];
+		bvhFaces[i] = (sourceIndex == UINT32_MAX) ? Face() : mesh.faces[sourceIndex];
 	}
 
 	for (int i = 0; i < mesh.vertices.size(); i++) {
@@ -460,7 +460,7 @@ void run(Configuration& config) {
 		bvhVertexData[i] = VertexData{ mesh.vertices[i].normal };
 	}
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+	ts.push_back(std::chrono::high_resolution_clock::now());
 
 	std::cout << "Uploading..." << std::endl;
 	image_b output(config.width, config.height, 3);
@@ -481,27 +481,31 @@ void run(Configuration& config) {
 	VertexData *d_vertexData = (VertexData*) my_malloc(bvhVertexData.size() * sizeof(VertexData));
 	my_upload(d_vertexData, bvhVertexData.data(), bvhVertexData.size() * sizeof(VertexData));
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+	ts.push_back(std::chrono::high_resolution_clock::now());
 
-	std::cout << "Rendering..." << std::endl;
-	trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.camera, config.light, output.width(), output.height(), bvh.maxPrimitives, config.shading == FLAT, config.shadows);
-	my_synchronize();
+	for (int i = 0; i < config.cameras.size(); i++) {
+		std::cout << "Rendering..." << std::endl;
+		trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.cameras[i], config.light, config.width, config.height, bvh.maxPrimitives, config.shading == FLAT, config.shadows);
+		my_synchronize();
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+		ts.push_back(std::chrono::high_resolution_clock::now());
 
-	std::cout << "Downloading..." << std::endl;
-	my_download(output.data(), d_framebuffer, output.size());
+		std::cout << "Downloading..." << std::endl;
+		my_download(output.data(), d_framebuffer, output.size());
 
-	ts[ti++] = std::chrono::high_resolution_clock::now();
+		ts.push_back(std::chrono::high_resolution_clock::now());
 
-	if (!config.output.empty()) {
-		std::cout << "Saving..." << std::endl;
-		image_io::save(output, config.output.c_str());
-	} else {
-		std::cout << "No output file specified" << std::endl;
+		if (!config.output.empty()) {
+			std::cout << "Saving..." << std::endl;
+			char buffer[256];
+			snprintf(buffer, sizeof(buffer), config.output.c_str(), i);
+			image_io::save(output, buffer);
+		} else {
+			std::cout << "No output file specified" << std::endl;
+		}
+
+		ts.push_back(std::chrono::high_resolution_clock::now());
 	}
-
-	ts[ti++] = std::chrono::high_resolution_clock::now();
 
 	int tj = 0;
 	printf("Mesh:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
@@ -509,14 +513,14 @@ void run(Configuration& config) {
 	printf("BVH:       %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	printf("Rearrange: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("Render:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("Download:  %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	if (!config.output.empty()) {
-	printf("Save:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count());
-	} tj++; // for save
-
-	assert(tj == ti-1); // should have one less interval than timestamps
-	assert(ti <= sizeof(ts)/sizeof(ts[0]));
+	for (int i = 0; i < config.cameras.size(); i++) {
+		printf("Render:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+		printf("Download:  %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+		if (!config.output.empty()) {
+			printf("Save:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count());
+		}
+		tj++;
+	}
 
 	fflush(stdout);
 }
@@ -666,9 +670,15 @@ int main(int argc, const char** argv) {
 		std::cerr << "no input file specified, use -input or -config" << std::endl;
 		return 1;
 	}
+
 	if (config.width == 0 || config.height == 0) {
 		std::cerr << "no output size specified, use -width and -height or -config" << std::endl;
 		return 1;
+	}
+
+	if (config.cameras.empty()) {
+		Camera defaultCam = {};
+		config.cameras.push_back(defaultCam);
 	}
 
 	try {
