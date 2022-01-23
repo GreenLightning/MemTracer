@@ -281,7 +281,7 @@ struct InstructionBasedSizeAnalysis {
 	std::vector<Info> infos;
 
 	void run(Trace* trace);
-	void renderGui(const char* title);
+	void renderGui(const char* title, bool* open);
 };
 
 uint64_t gcd(uint64_t a, uint64_t b) {
@@ -351,7 +351,7 @@ struct LinearAccessAnalysis {
 	std::vector<uint8_t> flags;
 
 	void run(Trace* trace);
-	void renderGui(const char* title);
+	void renderGui(const char* title, bool* open);
 };
 
 void LinearAccessAnalysis::run(Trace* trace) {
@@ -399,7 +399,7 @@ struct ConsecutiveAccessAnalysis {
 	std::vector<uint64_t> matrix;
 
 	void run(Trace* trace);
-	void renderGui(const char* title);
+	void renderGui(const char* title, bool* open);
 };
 
 void ConsecutiveAccessAnalysis::run(Trace* trace) {
@@ -444,7 +444,7 @@ struct StackAnalysis {
 	std::vector<uint64_t> matrix;
 
 	void run(Trace* trace);
-	void renderGui(const char* title);
+	void renderGui(const char* title, bool* open);
 };
 
 void StackAnalysis::run(Trace* trace) {
@@ -527,7 +527,7 @@ struct RegionLinkAnalysis {
 	std::map<int64_t, std::set<int64_t>> links;
 
 	void run(Trace* trace);
-	void renderGui(const char* title);
+	void renderGui(const char* title, bool* open);
 };
 
 void RegionLinkAnalysis::run(Trace* trace) {
@@ -606,7 +606,7 @@ struct CaaDistributionAnalysis {
 		}
 	}
 
-	void renderGui(const char* title);
+	void renderGui(const char* title, bool* open);
 };
 
 struct GridInstruction {
@@ -1225,7 +1225,16 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 
 struct Application {
 	int width, height;
+	
+	bool ibsa = false;
+	bool caa = false;
+	bool sa = false;
+	bool index_rla = false;
+	bool bounds_rla = false;
+	bool index_laa = false;
+	bool caada = false;
 	bool demo = false;
+
 	uint64_t selected_launch_id     = UINT64_MAX;
 	uint64_t selected_instr_addr    = UINT64_MAX;
 	uint64_t selected_mem_region_id = UINT64_MAX;
@@ -1512,12 +1521,14 @@ void Grid::renderGui() {
 	ImGui::End();
 }
 
-void InstructionBasedSizeAnalysis::renderGui(const char* title) {
+void InstructionBasedSizeAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin(title)) {
+	if (ImGui::Begin(title, open)) {
 		if (ImGui::BeginTable("Estimates", 3, flags)) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Inst. Index", ImGuiTableColumnFlags_None);
@@ -1540,12 +1551,14 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
-void LinearAccessAnalysis::renderGui(const char* title) {
+void LinearAccessAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin(title)) {
+	if (ImGui::Begin(title, open)) {
 		ImGui::Text("Region: %llu", this->region->mem_region_id);
 		ImGui::Text("Objects: %llu * %llu bytes", this->region->object_count, this->region->object_size);
 
@@ -1576,12 +1589,14 @@ void LinearAccessAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
-void ConsecutiveAccessAnalysis::renderGui(const char* title) {
+void ConsecutiveAccessAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin(title)) {
+	if (ImGui::Begin(title, open)) {
 		static int index = 0;
 		ImGui::InputInt("index", &index);
 		if (index >= static_cast<int64_t>(this->region->object_count)) index = static_cast<int>(this->region->object_count) - 1;
@@ -1609,12 +1624,14 @@ void ConsecutiveAccessAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
-void StackAnalysis::renderGui(const char* title) {
+void StackAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin(title)) {
+	if (ImGui::Begin(title, open)) {
 		static int index = 0;
 		ImGui::InputInt("index", &index);
 		if (index >= static_cast<int64_t>(this->region->object_count)) index = static_cast<int>(this->region->object_count) - 1;
@@ -1642,12 +1659,14 @@ void StackAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
-void RegionLinkAnalysis::renderGui(const char* title) {
+void RegionLinkAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin(title)) {
+	if (ImGui::Begin(title, open)) {
 		if (ImGui::BeginTable("Links", 2, flags)) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Index A", ImGuiTableColumnFlags_None);
@@ -1678,10 +1697,12 @@ void RegionLinkAnalysis::renderGui(const char* title) {
 	ImGui::End();
 }
 
-void CaaDistributionAnalysis::renderGui(const char* title) {
+void CaaDistributionAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin(title)) {
+	if (ImGui::Begin(title, open)) {
 		if (ImPlot::BeginPlot("Distribution")) {
 			ImPlot::PlotBars("My Bar Plot", buckets, num_buckets);
 			ImPlot::EndPlot();
@@ -1714,6 +1735,30 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	}
 
 	if (ImGui::BeginMainMenuBar()) {
+		if (ImGui::BeginMenu("View")) {
+			if (ImGui::MenuItem("Instruction Based Size Analysis", "", app.ibsa, true)) {
+				app.ibsa = !app.ibsa;
+			}
+			if (ImGui::MenuItem("Consecutive Access Analysis", "", app.caa, true)) {
+				app.caa = !app.caa;
+			}
+			if (ImGui::MenuItem("Stack Analysis", "", app.sa, true)) {
+				app.sa = !app.sa;
+			}
+			if (ImGui::MenuItem("Region Link Analysis - Nodes - Indices", "", app.index_rla, true)) {
+				app.index_rla = !app.index_rla;
+			}
+			if (ImGui::MenuItem("Region Link Analysis - Nodes - Bounds", "", app.bounds_rla, true)) {
+				app.bounds_rla = !app.bounds_rla;
+			}
+			if (ImGui::MenuItem("Linear Access Analysis - Indices", "", app.index_laa, true)) {
+				app.index_laa = !app.index_laa;
+			}
+			if (ImGui::MenuItem("CAA Distribution Analysis", "", app.caada, true)) {
+				app.caada = !app.caada;
+			}
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("Help")) {
 			if (ImGui::MenuItem("ImGUI Demo", "", app.demo, true)) {
 				app.demo = !app.demo;
@@ -1744,13 +1789,13 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	app.grid.renderGui();
 
 	if (app.workspace) {
-		app.workspace->analysis.ibsa.renderGui("Instruction Based Size Analysis");
-		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis");
-		app.workspace->analysis.sa.renderGui("Stack Analysis");
-		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices");
-		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds");
-		app.workspace->analysis.index_laa.renderGui("Linear Access Analysis");
-		app.workspace->analysis.caada.renderGui("CAA Distribution Analysis");
+		app.workspace->analysis.ibsa.renderGui("Instruction Based Size Analysis", &app.ibsa);
+		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis", &app.caa);
+		app.workspace->analysis.sa.renderGui("Stack Analysis", &app.sa);
+		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices", &app.index_rla);
+		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds", &app.bounds_rla);
+		app.workspace->analysis.index_laa.renderGui("Linear Access Analysis", &app.index_laa);
+		app.workspace->analysis.caada.renderGui("CAA Distribution Analysis", &app.caada);
 	}
 
 	if (app.demo) {
