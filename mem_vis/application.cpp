@@ -840,9 +840,7 @@ struct AnalysisSet {
 	LinearAccessAnalysis index_laa;
 	CaaDistributionAnalysis caada;
 
-	void init(Trace* trace) {
-		uint64_t grid_launch_id = 0;
-
+	void init(Trace* trace, uint64_t grid_launch_id) {
 		ibsa.grid_launch_id = grid_launch_id;
 		ibsa.run(trace);
 
@@ -1026,6 +1024,160 @@ Tree pruneTree(Tree* source) {
 	return dest;
 }
 
+Tree mergeTrees(Tree* left, Tree* right) {
+	Tree dest;
+
+	// Very bad upper bound.
+	// Can be avoided by building node_by_address after all the nodes have been inserted.
+	dest.nodes.reserve(left->nodes.size() + right->nodes.size());
+
+	std::unordered_map<uint64_t, Node*> node_by_address;
+	std::unordered_map<uint64_t, Node*> left_node_by_address;
+	std::unordered_map<uint64_t, Node*> right_node_by_address;
+
+	for (auto& node : left->nodes) {
+		left_node_by_address[node.address] = &node;
+		if (!node_by_address.count(node.address)) {
+			dest.nodes.push_back(Node{});
+			Node* p = &dest.nodes.back();
+			p->address = node.address;
+			node_by_address[node.address] = p;
+		}
+	}
+
+	for (auto& node : right->nodes) {
+		right_node_by_address[node.address] = &node;
+		if (!node_by_address.count(node.address)) {
+			dest.nodes.push_back(Node{});
+			Node* p = &dest.nodes.back();
+			p->address = node.address;
+			node_by_address[node.address] = p;
+		}
+	}
+
+	int type_conflict = 0;
+	int parent_conflict = 0;
+	int leaf_conflict = 0;
+
+	for (auto& node : dest.nodes) {
+		auto left_it = left_node_by_address.find(node.address);
+		Node* l = left_it == left_node_by_address.end() ? nullptr : left_it->second;
+		auto right_it = right_node_by_address.find(node.address);
+		Node* r = right_it == right_node_by_address.end() ? nullptr : right_it->second;
+
+		defer {
+			// Patch pointers to always point into dest, duh.
+			if (node.type == Node::PARENT) {
+				if (node.parent_data.left) node.parent_data.left = node_by_address[node.parent_data.left->address];
+				if (node.parent_data.right) node.parent_data.right = node_by_address[node.parent_data.right->address];
+			}
+		};
+
+		if (l == nullptr) {
+			node = *r;
+			continue;
+		}
+		if (r == nullptr) {
+			node = *l;
+			continue;
+		}
+
+		if (l->type == Node::UNKNOWN) {
+			node = *r;
+			continue;
+		}
+		if (r->type == Node::UNKNOWN) {
+			node = *l;
+			continue;
+		}
+		if (l->type != r->type) {
+			type_conflict++;
+			node.type = Node::UNKNOWN;
+			continue;
+		}
+
+		node.type = l->type;
+		switch (node.type) {
+			case Node::PARENT: {
+				uint64_t children[4];
+				int count = 0;
+				if (l->parent_data.left) {
+					bool found = false;
+					for (int i = 0; i < count; i++) {
+						if (l->parent_data.left->address == children[i]) {
+							found = true;
+							break;
+						}
+					}
+					if (!found) {
+						children[count++] = l->parent_data.left->address;
+					}
+				}
+				if (l->parent_data.right) {
+					bool found = false;
+					for (int i = 0; i < count; i++) {
+						if (l->parent_data.right->address == children[i]) {
+							found = true;
+							break;
+						}
+					}
+					if (!found) {
+						children[count++] = l->parent_data.right->address;
+					}
+				}
+				if (r->parent_data.left) {
+					bool found = false;
+					for (int i = 0; i < count; i++) {
+						if (r->parent_data.left->address == children[i]) {
+							found = true;
+							break;
+						}
+					}
+					if (!found) {
+						children[count++] = r->parent_data.left->address;
+					}
+				}
+				if (r->parent_data.right) {
+					bool found = false;
+					for (int i = 0; i < count; i++) {
+						if (r->parent_data.right->address == children[i]) {
+							found = true;
+							break;
+						}
+					}
+					if (!found) {
+						children[count++] = r->parent_data.right->address;
+					}
+				}
+				if (count > 2) {
+					node.type = Node::UNKNOWN;
+					parent_conflict++;
+				} else {
+					node.parent_data.left = nullptr;
+					node.parent_data.right = nullptr;
+					if (count > 0) node.parent_data.left = node_by_address[children[0]];
+					if (count > 1) node.parent_data.right = node_by_address[children[1]];
+				}
+			} break;
+
+			case Node::LEAF: {
+				if (l->leaf_data.face_address != r->leaf_data.face_address || l->leaf_data.face_count != r->leaf_data.face_count) {
+					leaf_conflict++;
+					node.type = Node::UNKNOWN;
+				} else {
+					node.leaf_data = l->leaf_data;
+				}
+			} break;
+		}
+	}
+
+
+	printf("type_conflict %d\n", type_conflict);
+	printf("parent_conflict %d\n", parent_conflict);
+	printf("leaf_conflict %d\n", leaf_conflict);
+	return dest;
+}
+
 Tree buildReferenceTree(Trace* trace) {
 	Tree tree;
 
@@ -1166,23 +1318,37 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 
 struct Workspace {
 	std::unique_ptr<Trace> trace;
-	AnalysisSet analysis;
+	std::vector<AnalysisSet> analysis;
 	Tree reference;
 	Tree reconstruction;
 	Tree prunedReconstruction;
 	Tree preciseReconstruction;
 	Tree prunedPreciseReconstruction;
+	Tree fullReconstruction;
 };
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
 	ws->trace = std::move(trace);
-	ws->analysis.init(ws->trace.get());
+	ws->analysis.resize(ws->trace->header.launch_info_count);
+	for (uint64_t i = 0; i < ws->trace->header.launch_info_count; i++) {
+		ws->analysis[i].init(ws->trace.get(), i);
+	}
+	
+	AnalysisSet* as = &ws->analysis[0];
 	ws->reference = buildReferenceTree(ws->trace.get());
-	ws->reconstruction = reconstructTree(&ws->analysis, &ws->analysis.caa);
+	ws->reconstruction = reconstructTree(as, &as->caa);
 	ws->prunedReconstruction = pruneTree(&ws->reconstruction);
-	ws->preciseReconstruction = reconstructTree(&ws->analysis, &ws->analysis.sa);
+	ws->preciseReconstruction = reconstructTree(as, &as->sa);
 	ws->prunedPreciseReconstruction = pruneTree(&ws->preciseReconstruction);
+
+	ws->fullReconstruction = ws->preciseReconstruction;
+	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
+		AnalysisSet* as = &ws->analysis[i];
+		Tree partial = reconstructTree(as, &as->sa);
+		ws->fullReconstruction = mergeTrees(&ws->fullReconstruction, &partial);
+	}
+	ws->fullReconstruction = pruneTree(&ws->fullReconstruction);
 
 	TreeStats ref = countTree(&ws->reference);
 	{
@@ -1202,6 +1368,9 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		
 		s = countTree(&ws->prunedPreciseReconstruction);
 		printf("Precise Tree:        U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
+
+		s = countTree(&ws->fullReconstruction);
+		printf("Full Tree:           U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
 	}
 
 	{
@@ -1218,6 +1387,9 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		
 		r = rateTree(&ws->prunedPreciseReconstruction, &ws->reference);
 		printf("Precise Tree:        PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+
+		r = rateTree(&ws->fullReconstruction, &ws->reference);
+		printf("Full Tree:           PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 	}
 
 	return ws;
@@ -1789,13 +1961,14 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	app.grid.renderGui();
 
 	if (app.workspace) {
-		app.workspace->analysis.ibsa.renderGui("Instruction Based Size Analysis", &app.ibsa);
-		app.workspace->analysis.caa.renderGui("Consecutive Access Analysis", &app.caa);
-		app.workspace->analysis.sa.renderGui("Stack Analysis", &app.sa);
-		app.workspace->analysis.index_rla.renderGui("Region Link Analysis - Nodes - Indices", &app.index_rla);
-		app.workspace->analysis.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds", &app.bounds_rla);
-		app.workspace->analysis.index_laa.renderGui("Linear Access Analysis", &app.index_laa);
-		app.workspace->analysis.caada.renderGui("CAA Distribution Analysis", &app.caada);
+		AnalysisSet& as = app.workspace->analysis[app.selected_launch_id];
+		as.ibsa.renderGui("Instruction Based Size Analysis", &app.ibsa);
+		as.caa.renderGui("Consecutive Access Analysis", &app.caa);
+		as.sa.renderGui("Stack Analysis", &app.sa);
+		as.index_rla.renderGui("Region Link Analysis - Nodes - Indices", &app.index_rla);
+		as.bounds_rla.renderGui("Region Link Analysis - Nodes - Bounds", &app.bounds_rla);
+		as.index_laa.renderGui("Linear Access Analysis", &app.index_laa);
+		as.caada.renderGui("CAA Distribution Analysis", &app.caada);
 	}
 
 	if (app.demo) {
