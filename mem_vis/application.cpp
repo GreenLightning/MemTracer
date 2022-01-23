@@ -23,8 +23,30 @@
 
 #include "application.hpp"
 
+struct TraceInstructionKey {
+	uint64_t grid_launch_id;
+	uint64_t instr_addr;
+
+	friend bool operator<(const TraceInstructionKey& lhs, const TraceInstructionKey& rhs) {
+		if (lhs.grid_launch_id != rhs.grid_launch_id) return lhs.grid_launch_id < rhs.grid_launch_id;
+		return lhs.instr_addr < rhs.instr_addr;
+	}
+
+	friend bool operator==(const TraceInstructionKey& lhs, const TraceInstructionKey& rhs) {
+		return lhs.grid_launch_id == rhs.grid_launch_id && lhs.instr_addr == rhs.instr_addr;
+	}
+};
+
+template<>
+struct std::hash<TraceInstructionKey> {
+	std::size_t operator()(TraceInstructionKey const& key) const noexcept {
+		return 7919 * key.grid_launch_id + key.instr_addr;
+	}
+};
+
 struct TraceInstruction {
 	uint64_t    index;
+	uint64_t    grid_launch_id;
 	uint64_t    instr_addr;
 	std::string opcode;
 	uint64_t    count = 0;
@@ -49,7 +71,7 @@ struct Trace {
 	mio::mmap_source mmap;
 	header_t header = {};
 	std::vector<std::string> strings;
-	std::unordered_map<uint64_t, TraceInstruction> instructionsByAddr;
+	std::unordered_map<TraceInstructionKey, TraceInstruction> instructionsByLaunchAndAddr;
 	std::vector<TraceInstruction> instructions;
 	std::vector<TraceRegion> regions;
 	std::vector<mem_access_t> accesses;
@@ -59,6 +81,11 @@ struct Trace {
 	}
 
 	void renderGuiInWindow();
+
+	TraceInstruction* find_instr(uint64_t grid_launch_id, uint64_t instr_addr) {
+		auto it = this->instructionsByLaunchAndAddr.find(TraceInstructionKey{grid_launch_id, instr_addr});
+		return it == this->instructionsByLaunchAndAddr.end() ? nullptr : &it->second;
+	}
 
 	TraceRegion* find_region(uint64_t grid_launch_id, uint64_t mem_region_id) {
 		for (int i = 0; i < regions.size(); i++) {
@@ -136,9 +163,11 @@ struct Trace {
 
 		for (int i = 0; i < header.mem_access_count; i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			auto count = instructionsByAddr.count(ma->instr_addr);
-			TraceInstruction& instr = instructionsByAddr[ma->instr_addr];
+			auto key = TraceInstructionKey{ma->grid_launch_id, ma->instr_addr};
+			auto count = instructionsByLaunchAndAddr.count(key);
+			TraceInstruction& instr = instructionsByLaunchAndAddr[key];
 			if (count == 0) {
+				instr.grid_launch_id = ma->grid_launch_id;
 				instr.instr_addr = ma->instr_addr;
 				for (int i = 0; i < header.addr_info_count; i++) {
 					addr_info_t* info = (addr_info_t*) &mmap[header.addr_info_offset + i * header.addr_info_size];
@@ -158,29 +187,31 @@ struct Trace {
 			}
 		}
 
-		for (auto& pair : instructionsByAddr) {
+		for (auto& pair : instructionsByLaunchAndAddr) {
 			TraceInstruction& instr = pair.second;
 			for (int i = 0; i < header.mem_region_count; i++) {
 				mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
-				// TODO: This ignores the grid_launch_id.
-				if (region->start <= instr.min && instr.max < region->start + region->size) {
+				if (region->grid_launch_id == instr.grid_launch_id && region->start <= instr.min && instr.max < region->start + region->size) {
 					instr.mem_region_id = region->mem_region_id;
 					break;
 				}
 			}
 		}
 
-		for (auto& pair : instructionsByAddr) {
+		for (auto& pair : instructionsByLaunchAndAddr) {
 			instructions.push_back(pair.second);
 		}
 
 		std::sort(instructions.begin(), instructions.end(), [] (const TraceInstruction& a, const TraceInstruction& b) {
+			if (a.grid_launch_id != b.grid_launch_id) return a.grid_launch_id < b.grid_launch_id;
 			return a.instr_addr < b.instr_addr;
 		});
 
 		for (uint64_t i = 0; i < instructions.size(); i++) {
-			instructions[i].index = i;
-			instructionsByAddr[instructions[i].instr_addr].index = i;
+			TraceInstruction& instr = instructions[i];
+			instr.index = i;
+			auto key = TraceInstructionKey{instr.grid_launch_id, instr.instr_addr};
+			instructionsByLaunchAndAddr[key].index = i;
 		}
 
 		// TRACE REGIONS
@@ -276,14 +307,14 @@ void InstructionBasedSizeAnalysis::run(Trace* trace) {
 			}
 		}
 
-		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id == UINT64_MAX) continue;
+		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
+		if (instr->mem_region_id == UINT64_MAX) continue;
 
-		uint64_t* last_addrs = &last_addresses[instr.index * 32];
+		uint64_t* last_addrs = &last_addresses[instr->index * 32];
 		for (int j = 0; j < 32; j++) {
 			if (last_addrs[j] != 0 && ma->addrs[j] != 0) {
 				uint64_t diff = (ma->addrs[j] > last_addrs[j]) ? (ma->addrs[j] - last_addrs[j]) : (last_addrs[j] - ma->addrs[j]);
-				estimates[instr.index] = gcd(estimates[instr.index], diff);
+				estimates[instr->index] = gcd(estimates[instr->index], diff);
 			}
 			last_addrs[j] = ma->addrs[j];
 		}
@@ -341,8 +372,8 @@ void LinearAccessAnalysis::run(Trace* trace) {
 			}
 		}
 
-		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id != this->region->mem_region_id) continue;
+		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
+		if (instr->mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
 			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
@@ -391,8 +422,8 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 			}
 		}
 
-		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id != this->region->mem_region_id) continue;
+		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
+		if (instr->mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
 			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
@@ -450,9 +481,9 @@ void StackAnalysis::run(Trace* trace) {
 			}
 		};
 
-		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
+		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
 
-		if (instr.opcode == "STL.128") {
+		if (instr->opcode == "STL.128") {
 			for (int i = 0; i < 32; i++) {
 				uint64_t stack_addr = ma->addrs[i];
 				if (!stack_addr) continue;
@@ -461,7 +492,7 @@ void StackAnalysis::run(Trace* trace) {
 			continue;
 		}
 
-		if (instr.opcode == "LDL.128") {
+		if (instr->opcode == "LDL.128") {
 			for (int i = 0; i < 32; i++) {
 				uint64_t stack_addr = ma->addrs[i];
 				if (!stack_addr) continue;
@@ -476,7 +507,7 @@ void StackAnalysis::run(Trace* trace) {
 			continue;
 		}
 
-		if (instr.mem_region_id != this->region->mem_region_id) continue;
+		if (instr->mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
 			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
@@ -523,12 +554,12 @@ void RegionLinkAnalysis::run(Trace* trace) {
 			}
 		}
 
-		TraceInstruction& instr = trace->instructionsByAddr[ma->instr_addr];
-		if (instr.mem_region_id == this->region_a->mem_region_id) {
+		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
+		if (instr->mem_region_id == this->region_a->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
 				last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_a->start) / this->region_a->object_size;
 			}
-		} else if (instr.mem_region_id == this->region_b->mem_region_id) {
+		} else if (instr->mem_region_id == this->region_b->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
 				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_b->start) / this->region_b->object_size;
 				if (last_access[i] >= 0 && access >= 0) {
@@ -536,7 +567,7 @@ void RegionLinkAnalysis::run(Trace* trace) {
 				}
 				last_access[i] = -1;
 			}
-		} else if (instr.mem_region_id != UINT64_MAX) {
+		} else if (instr->mem_region_id != UINT64_MAX) {
 			for (int i = 0; i < 32; i++) {
 				last_access[i] = -1;
 			}
