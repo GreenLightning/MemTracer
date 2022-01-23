@@ -162,7 +162,7 @@ struct Trace {
 
 		// TRACE INSTRUCTIONS
 
-		for (int i = 0; i < header.mem_access_count; i++) {
+		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
 			auto key = TraceInstructionKey{ma->grid_launch_id, ma->instr_addr};
 			auto count = instructionsByLaunchAndAddr.count(key);
@@ -667,9 +667,10 @@ struct Grid {
 			int targetWarpIndex = targetThreadIndex / 32;
 			int targetAccessIndex = targetThreadIndex % 32;
 
-			for (int i = 0; i < trace->header.mem_access_count; i++) {
-				mem_access_t* ma = (mem_access_t*) &trace->mmap[trace->header.mem_access_offset + i * trace->header.mem_access_size];
-				if (ma->grid_launch_id != grid_launch_id || ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex || ma->addrs[targetAccessIndex] == 0) continue;
+			for (int64_t i = trace->firstAccessIndexByLaunchID[grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+				mem_access_t* ma = &trace->accesses[i];
+				if (ma->grid_launch_id != grid_launch_id) break;
+				if (ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex || ma->addrs[targetAccessIndex] == 0) continue;
 				
 				GridInstruction instr = {};
 				instr.instr_addr = ma->instr_addr;
@@ -731,12 +732,14 @@ struct Grid {
 		int widthInThreads = info.grid_dim_x * info.block_dim_x;
 
 		if (trace != cached_trace || grid_launch_id != cached_grid_launch_id) {
+			counts.resize(0);
 			counts.resize(heightInThreads * widthInThreads);
 			maxCount = 0;
 			if (trace) {
-				for (int i = 0; i < trace->header.mem_access_count; i++) {
-					mem_access_t* ma = (mem_access_t*) &trace->mmap[trace->header.mem_access_offset + i * trace->header.mem_access_size];
-					if (ma->grid_launch_id != grid_launch_id || ma->block_idx_z != 0) continue;
+				for (int64_t i = trace->firstAccessIndexByLaunchID[grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+					mem_access_t* ma = &trace->accesses[i];
+					if (ma->grid_launch_id != grid_launch_id) break;
+					if (ma->block_idx_z != 0) continue;
 
 					for (int i = 0; i < 32; i++) {
 						uint64_t addr = ma->addrs[i];
@@ -1223,6 +1226,7 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 struct Application {
 	int width, height;
 	bool demo = false;
+	uint64_t selected_launch_id     = UINT64_MAX;
 	uint64_t selected_instr_addr    = UINT64_MAX;
 	uint64_t selected_mem_region_id = UINT64_MAX;
 
@@ -1313,27 +1317,28 @@ void Trace::renderGuiInWindow() {
 		ImGui::TableSetupColumn("Block Size", ImGuiTableColumnFlags_None);
 		ImGui::TableHeadersRow();
 
-		ImGuiListClipper clipper;
-		clipper.Begin(static_cast<int>(this->header.launch_info_count));
-		while (clipper.Step()) {
-			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-				launch_info_t* info = (launch_info_t*) &this->mmap[this->header.launch_info_offset + row * this->header.launch_info_size];
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", info->grid_launch_id);
-				ImGui::TableNextColumn();
-				ImGui::Text("%d,%d,%d", info->grid_dim_x, info->grid_dim_y, info->grid_dim_z);
-				ImGui::TableNextColumn();
-				ImGui::Text("%d,%d,%d", info->block_dim_x, info->block_dim_y, info->block_dim_z);
+		for (uint64_t i = 0; i < this->header.launch_info_count; i++) {
+			launch_info_t* info = (launch_info_t*) &this->mmap[this->header.launch_info_offset + i * this->header.launch_info_size];
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+
+			char label[32];
+			snprintf(label, sizeof(label), "%llu", info->grid_launch_id);
+			ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+			if (ImGui::Selectable(label, app.selected_launch_id == info->grid_launch_id, selectable_flags)) {
+				app.selected_launch_id = info->grid_launch_id;
 			}
+
+			ImGui::TableNextColumn();
+			ImGui::Text("%d,%d,%d", info->grid_dim_x, info->grid_dim_y, info->grid_dim_z);
+			ImGui::TableNextColumn();
+			ImGui::Text("%d,%d,%d", info->block_dim_x, info->block_dim_y, info->block_dim_z);
 		}
 		ImGui::EndTable();
 	}
 
-	float regionsHeight = min((this->header.mem_region_count + 2) * ImGui::GetFrameHeight(), 200);
-	if (ImGui::BeginTable("Memory Regions", 6, flags, ImVec2(0.0f, regionsHeight))) {
+	if (ImGui::BeginTable("Memory Regions", 5, flags, ImVec2(0.0f, 200.0f))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
-		ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("Region ID", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_None);
@@ -1341,34 +1346,29 @@ void Trace::renderGuiInWindow() {
 		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
 		ImGui::TableHeadersRow();
 
-		ImGuiListClipper clipper;
-		clipper.Begin(static_cast<int>(this->header.mem_region_count));
-		while (clipper.Step()) {
-			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-				mem_region_t* region = (mem_region_t*) &this->mmap[this->header.mem_region_offset + row * this->header.mem_region_size];
-				
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", region->grid_launch_id);
-				ImGui::TableNextColumn();
+		for (uint64_t i = 0; i < this->header.mem_region_count; i++) {
+			mem_region_t* region = (mem_region_t*) &this->mmap[this->header.mem_region_offset + i * this->header.mem_region_size];
+			if (region->grid_launch_id != app.selected_launch_id) continue;
+			
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
 
-				char label[32];
-				snprintf(label, sizeof(label), "%llu", region->mem_region_id);
-				ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
-				if (ImGui::Selectable(label, app.selected_mem_region_id == region->mem_region_id, selectable_flags)) {
-					app.selected_instr_addr = UINT64_MAX;
-					app.selected_mem_region_id = region->mem_region_id;
-				}
-
-				ImGui::TableNextColumn();
-				ImGui::Text("0x%016lx", region->start);
-				ImGui::TableNextColumn();
-				ImGui::Text("0x%016lx", region->start + region->size);
-				ImGui::TableNextColumn();
-				ImGui::Text("0x%016lx", region->size);
-				ImGui::TableNextColumn();
-				ImGui::Text("%ld", region->size);
+			char label[32];
+			snprintf(label, sizeof(label), "%llu", region->mem_region_id);
+			ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+			if (ImGui::Selectable(label, app.selected_mem_region_id == region->mem_region_id, selectable_flags)) {
+				app.selected_instr_addr = UINT64_MAX;
+				app.selected_mem_region_id = region->mem_region_id;
 			}
+
+			ImGui::TableNextColumn();
+			ImGui::Text("0x%016lx", region->start);
+			ImGui::TableNextColumn();
+			ImGui::Text("0x%016lx", region->start + region->size);
+			ImGui::TableNextColumn();
+			ImGui::Text("0x%016lx", region->size);
+			ImGui::TableNextColumn();
+			ImGui::Text("%ld", region->size);
 		}
 		ImGui::EndTable();
 	}
@@ -1386,36 +1386,33 @@ void Trace::renderGuiInWindow() {
 
 		ImGui::TableHeadersRow();
 
-		ImGuiListClipper clipper;
-		clipper.Begin(static_cast<int>(this->instructions.size()));
-		while (clipper.Step()) {
-			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-				TraceInstruction& instr = this->instructions[row];
+		for (uint64_t i = 0; i < this->instructions.size(); i++) {
+			TraceInstruction& instr = this->instructions[i];
+			if (instr.grid_launch_id != app.selected_launch_id) continue;
 
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				char label[32];
-				snprintf(label, sizeof(label), "%d", row);
-				ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
-				if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
-					app.selected_instr_addr = instr.instr_addr;
-					app.selected_mem_region_id = UINT64_MAX;
-				}
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			char label[32];
+			snprintf(label, sizeof(label), "%llu", i);
+			ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap;
+			if (ImGui::Selectable(label, app.selected_instr_addr == instr.instr_addr, selectable_flags)) {
+				app.selected_instr_addr = instr.instr_addr;
+				app.selected_mem_region_id = UINT64_MAX;
+			}
 
-				ImGui::TableNextColumn();
-				ImGui::Text("0x%016lx", instr.instr_addr);
-				ImGui::TableNextColumn();
-				ImGui::Text("%s", instr.opcode.c_str());
-				ImGui::TableNextColumn();
-				ImGui::Text("%d", instr.count);
-				ImGui::TableNextColumn();
-				ImGui::Text("0x%016lx", instr.min);
-				ImGui::TableNextColumn();
-				ImGui::Text("0x%016lx", instr.max);
-				ImGui::TableNextColumn();
-				if (instr.mem_region_id != UINT64_MAX) {
-					ImGui::Text("%d", instr.mem_region_id);
-				}
+			ImGui::TableNextColumn();
+			ImGui::Text("0x%016lx", instr.instr_addr);
+			ImGui::TableNextColumn();
+			ImGui::Text("%s", instr.opcode.c_str());
+			ImGui::TableNextColumn();
+			ImGui::Text("%d", instr.count);
+			ImGui::TableNextColumn();
+			ImGui::Text("0x%016lx", instr.min);
+			ImGui::TableNextColumn();
+			ImGui::Text("0x%016lx", instr.max);
+			ImGui::TableNextColumn();
+			if (instr.mem_region_id != UINT64_MAX) {
+				ImGui::Text("%d", instr.mem_region_id);
 			}
 		}
 		ImGui::EndTable();
@@ -1444,7 +1441,7 @@ void Grid::renderGui() {
 		}
 
 		Trace* trace = app.workspace ? app.workspace->trace.get() : nullptr;
-		this->update(trace, 0);
+		this->update(trace, app.selected_launch_id);
 
 		ImGui::Image((void*)(intptr_t)this->texture, ImVec2(static_cast<float>(this->imageWidth), static_cast<float>(this->imageHeight)));
 
@@ -1536,7 +1533,7 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title) {
 				ImGui::Text("%llu", info.mem_region_id);
 				ImGui::TableNextColumn();
 				ImGui::Text("%llu", info.estimate);
-			}	
+			}
 			ImGui::EndTable();
 		}
 	}
@@ -1711,6 +1708,10 @@ void EndMainStatusBar() {
 
 void appRenderGui(GLFWwindow* window, float delta) {
 	// Render gui.
+
+	if (app.workspace && app.selected_launch_id >= app.workspace->trace->header.launch_info_count) {
+		app.selected_launch_id = 0;
+	}
 
 	if (ImGui::BeginMainMenuBar()) {
 		if (ImGui::BeginMenu("Help")) {
