@@ -75,6 +75,7 @@ struct Trace {
 	std::vector<TraceInstruction> instructions;
 	std::vector<TraceRegion> regions;
 	std::vector<mem_access_t> accesses;
+	std::unordered_map<uint64_t, int64_t> firstAccessIndexByLaunchID;
 
 	~Trace() {
 		mmap.unmap();
@@ -234,7 +235,7 @@ struct Trace {
 		auto t0 = std::chrono::high_resolution_clock::now();
 
 		accesses.reserve(header.mem_access_count);
-		for (int i = 0; i < header.mem_access_count; i++) {
+		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
 			accesses.push_back(*ma);
 		}
@@ -251,6 +252,15 @@ struct Trace {
 		});
 		
 		auto t2 = std::chrono::high_resolution_clock::now();
+
+		uint64_t last_grid_launch_id = UINT64_MAX;
+		for (int64_t i = 0; i < static_cast<int64_t>(accesses.size()); i++) {
+			mem_access_t* ma = &accesses[i];
+			if (ma->grid_launch_id != last_grid_launch_id) {
+				firstAccessIndexByLaunchID[ma->grid_launch_id] = i;
+				last_grid_launch_id = ma->grid_launch_id;
+			}
+		}
 
 		printf("copy: %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
 		printf("sort: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
@@ -290,9 +300,7 @@ void InstructionBasedSizeAnalysis::run(Trace* trace) {
 	std::vector<uint64_t> last_addresses;
 	last_addresses.resize(trace->instructions.size() * 32);
 
-	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->grid_launch_id) i++;
-	for (; i < trace->accesses.size(); i++) {
+	for (int64_t i = trace->firstAccessIndexByLaunchID[this->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
 		mem_access_t* ma = &trace->accesses[i];
 		if (ma->grid_launch_id != this->grid_launch_id) break;
 
@@ -355,9 +363,7 @@ void LinearAccessAnalysis::run(Trace* trace) {
 
 	this->flags.resize(this->region->object_count);
 
-	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->region->grid_launch_id) i++;
-	for (; i < trace->accesses.size(); i++) {
+	for (int64_t i = trace->firstAccessIndexByLaunchID[this->region->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
 		mem_access_t* ma = &trace->accesses[i];
 		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
@@ -405,9 +411,7 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 
 	matrix.resize(this->region->object_count * this->region->object_count);
 
-	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->region->grid_launch_id) i++;
-	for (; i < trace->accesses.size(); i++) {
+	for (int64_t i = trace->firstAccessIndexByLaunchID[this->region->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
 		mem_access_t* ma = &trace->accesses[i];
 		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
@@ -454,9 +458,7 @@ void StackAnalysis::run(Trace* trace) {
 
 	matrix.resize(this->region->object_count * this->region->object_count);
 
-	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != this->region->grid_launch_id) i++;
-	for (; i < trace->accesses.size(); i++) {
+	for (int64_t i = trace->firstAccessIndexByLaunchID[this->region->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
 		mem_access_t* ma = &trace->accesses[i];
 		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
@@ -537,9 +539,7 @@ void RegionLinkAnalysis::run(Trace* trace) {
 	int32_t last_local_warp_id = -1;
 	int64_t last_access[32];
 
-	int i = 0;
-	while (i < trace->accesses.size() && trace->accesses[i].grid_launch_id != grid_launch_id) i++;
-	for (; i < trace->accesses.size(); i++) {
+	for (int64_t i = trace->firstAccessIndexByLaunchID[grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
 		mem_access_t* ma = &trace->accesses[i];
 		if (ma->grid_launch_id != grid_launch_id) break;
 
