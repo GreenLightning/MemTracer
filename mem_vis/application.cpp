@@ -182,12 +182,20 @@ public:
 
 		// TRACE INSTRUCTIONS
 
-		std::vector<uint64_t> accessCountsByLaunchID;
-		accessCountsByLaunchID.resize(header.launch_info_count);
+		std::vector<std::vector<uint64_t>> accessInfoByBlockIdxByLaunchID;
+		accessInfoByBlockIdxByLaunchID.resize(header.launch_info_count);
+		for (uint64_t launchID = 0; launchID < header.launch_info_count; launchID++) {
+			launch_info_t* info = (launch_info_t*) &mmap[header.launch_info_offset + launchID * header.launch_info_size];
+			accessInfoByBlockIdxByLaunchID[launchID].resize(info->grid_dim_z * info->grid_dim_y * info->grid_dim_x);
+		}
 
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			accessCountsByLaunchID[ma->grid_launch_id]++;
+
+			launch_info_t* info = (launch_info_t*) &mmap[header.launch_info_offset + ma->grid_launch_id * header.launch_info_size];
+			uint64_t blockIdx = (ma->block_idx_z * info->grid_dim_y + ma->block_idx_y) * info->grid_dim_x + ma->block_idx_x;
+			accessInfoByBlockIdxByLaunchID[ma->grid_launch_id][blockIdx]++;
+
 			auto key = TraceInstructionKey{ma->grid_launch_id, ma->instr_addr};
 			auto count = instructionsByKey.count(key);
 			TraceInstruction& instr = instructionsByKey[key];
@@ -261,21 +269,23 @@ public:
 		// COPY
 
 		// Compute prefix sum of access counts.
+		uint64_t index = 0;
 		firstAccessIndexByLaunchID.resize(header.launch_info_count + 1);
-		for (int i = 0; i < header.launch_info_count; i++) {
-			firstAccessIndexByLaunchID[i+1] = firstAccessIndexByLaunchID[i] + accessCountsByLaunchID[i];
-		}
-
-		std::vector<uint64_t> nextIndexByLaunchID;
-		nextIndexByLaunchID.resize(header.launch_info_count);
-		for (int i = 0; i < nextIndexByLaunchID.size(); i++) {
-			nextIndexByLaunchID[i] = firstAccessIndexByLaunchID[i];
+		for (uint64_t launchID = 0; launchID < header.launch_info_count; launchID++) {
+			for (uint64_t blockIdx = 0; blockIdx < accessInfoByBlockIdxByLaunchID[launchID].size(); blockIdx++) {
+				uint64_t temp = accessInfoByBlockIdxByLaunchID[launchID][blockIdx];
+				accessInfoByBlockIdxByLaunchID[launchID][blockIdx] = index;
+				index += temp;
+			}
+			firstAccessIndexByLaunchID[launchID+1] = index;
 		}
 
 		accesses.resize(header.mem_access_count);
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			uint64_t index = nextIndexByLaunchID[ma->grid_launch_id]++;
+			launch_info_t* info = (launch_info_t*) &mmap[header.launch_info_offset + ma->grid_launch_id * header.launch_info_size];
+			uint64_t blockIdx = (ma->block_idx_z * info->grid_dim_y + ma->block_idx_y) * info->grid_dim_x + ma->block_idx_x;
+			uint64_t index = accessInfoByBlockIdxByLaunchID[ma->grid_launch_id][blockIdx]++;
 			accesses[index] = *ma;
 		}
 
@@ -283,16 +293,16 @@ public:
 
 		// SORTING
 
-		for (int i = 0; i < header.launch_info_count; i++) {
-			uint64_t begin = firstAccessIndexByLaunchID[i];
-			uint64_t end = firstAccessIndexByLaunchID[i+1];
-			std::stable_sort(&accesses[begin], &accesses[end], [] (const mem_access_t& a, const mem_access_t& b) {
-				if (a.block_idx_z != b.block_idx_z) return a.block_idx_z < b.block_idx_z;
-				if (a.block_idx_y != b.block_idx_y) return a.block_idx_y < b.block_idx_y;
-				if (a.block_idx_x != b.block_idx_x) return a.block_idx_x < b.block_idx_x;
-				if (a.local_warp_id != b.local_warp_id) return a.local_warp_id < b.local_warp_id;
-				return false;
-			});
+		uint64_t begin = 0;
+		for (uint64_t launchID = 0; launchID < header.launch_info_count; launchID++) {
+			for (uint64_t blockIdx = 0; blockIdx < accessInfoByBlockIdxByLaunchID[launchID].size(); blockIdx++) {
+				uint64_t end = accessInfoByBlockIdxByLaunchID[launchID][blockIdx];
+				std::stable_sort(&accesses[begin], &accesses[end], [] (const mem_access_t& a, const mem_access_t& b) {
+					if (a.local_warp_id != b.local_warp_id) return a.local_warp_id < b.local_warp_id;
+					return false;
+				});
+				begin = end;
+			}
 		}
 		
 		auto t6 = std::chrono::high_resolution_clock::now();
