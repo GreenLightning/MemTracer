@@ -180,21 +180,72 @@ public:
 
 		auto t2 = std::chrono::high_resolution_clock::now();
 
-		// TRACE INSTRUCTIONS
+		// NOTE: Sorting
+		//
+		// We analyze the memory accesses one warp at a time, so that we only
+		// have to store intermediate analysis state for a single warp. To make
+		// this efficient the memory accesses are sorted by grid_launch_id,
+		// block_idx_z, block_idx_y, block_idx_x, local_warp_id. In this way,
+		// each analysis can perform a single linear scan over all the memory
+		// accesses and see each warp in order.
+		//
+		// We perform a counting sort, which is vastly more efficient than a
+		// comparison-based sort. In fact, we have to copy the memory accesses
+		// at least once anyway, because we do not want to modify the memory
+		// mapped file, so the copy is unavoidable. And by merging the counting
+		// with the trace instruction collection below, we avoid having to read
+		// the entire memory again, just to count the accesses. Therefore we
+		// basically get the sorting for free.
+		//
+		// Counting sort is also a stable sort, so the order of memory accesses
+		// within a warp is preserved without any special considerations.
+		//
+		// For sorting, the block index and the local warp id are combined into
+		// a single identifier called the global warp index. Because each launch
+		// might have a different number of warps, we use a two-stage approach
+		// keeping the launch ID and global warp index seperate.
 
-		std::vector<std::vector<uint64_t>> accessInfoByBlockIdxByLaunchID;
-		accessInfoByBlockIdxByLaunchID.resize(header.launch_info_count);
+		// WarpIndexFactors contains the multipliers to compute the global warp
+		// index for memory accesses in a specific grid.
+		struct WarpIndexFactors {
+			int32_t z;
+			int32_t y;
+			int32_t x;
+			int32_t local_warp_id;
+		};
+
+		std::vector<WarpIndexFactors> warpIndexFactorsByLaunchID;
+		warpIndexFactorsByLaunchID.resize(header.launch_info_count);
+
+		// accessInfo is the main data structure for the counting sort.
+		// At first it contains the number of memory accesses per warp.
+		// Later, these counts are converted into indices by a prefix scan.
+		std::vector<std::vector<uint64_t>> accessInfoByGlobalWarpIndexByLaunchID;
+		accessInfoByGlobalWarpIndexByLaunchID.resize(header.launch_info_count);
+
 		for (uint64_t launchID = 0; launchID < header.launch_info_count; launchID++) {
 			launch_info_t* info = (launch_info_t*) &mmap[header.launch_info_offset + launchID * header.launch_info_size];
-			accessInfoByBlockIdxByLaunchID[launchID].resize(info->grid_dim_z * info->grid_dim_y * info->grid_dim_x);
+
+			// Compute number of warps per block.
+			int32_t grid_dim_warp = (info->block_dim_x * info->block_dim_y * info->block_dim_z + 31) / 32;
+
+			warpIndexFactorsByLaunchID[launchID].z = grid_dim_warp * info->grid_dim_x * info->grid_dim_y;
+			warpIndexFactorsByLaunchID[launchID].y = grid_dim_warp * info->grid_dim_x;
+			warpIndexFactorsByLaunchID[launchID].x = grid_dim_warp;
+			warpIndexFactorsByLaunchID[launchID].local_warp_id = 1;
+
+			accessInfoByGlobalWarpIndexByLaunchID[launchID].resize(info->grid_dim_z * info->grid_dim_y * info->grid_dim_x * grid_dim_warp);
 		}
+
+		// TRACE INSTRUCTIONS
 
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
 
-			launch_info_t* info = (launch_info_t*) &mmap[header.launch_info_offset + ma->grid_launch_id * header.launch_info_size];
-			uint64_t blockIdx = (ma->block_idx_z * info->grid_dim_y + ma->block_idx_y) * info->grid_dim_x + ma->block_idx_x;
-			accessInfoByBlockIdxByLaunchID[ma->grid_launch_id][blockIdx]++;
+			// Count number of memory accesses per warp.
+			WarpIndexFactors& factors = warpIndexFactorsByLaunchID[ma->grid_launch_id];
+			int32_t globalWarpIndex = factors.z * ma->block_idx_z + factors.y * ma->block_idx_y + factors.x * ma->block_idx_x + factors.local_warp_id * ma->local_warp_id;
+			accessInfoByGlobalWarpIndexByLaunchID[ma->grid_launch_id][globalWarpIndex]++;
 
 			auto key = TraceInstructionKey{ma->grid_launch_id, ma->instr_addr};
 			auto count = instructionsByKey.count(key);
@@ -272,47 +323,31 @@ public:
 		uint64_t index = 0;
 		firstAccessIndexByLaunchID.resize(header.launch_info_count + 1);
 		for (uint64_t launchID = 0; launchID < header.launch_info_count; launchID++) {
-			for (uint64_t blockIdx = 0; blockIdx < accessInfoByBlockIdxByLaunchID[launchID].size(); blockIdx++) {
-				uint64_t temp = accessInfoByBlockIdxByLaunchID[launchID][blockIdx];
-				accessInfoByBlockIdxByLaunchID[launchID][blockIdx] = index;
+			for (uint64_t globalWarpIndex = 0; globalWarpIndex < accessInfoByGlobalWarpIndexByLaunchID[launchID].size(); globalWarpIndex++) {
+				uint64_t temp = accessInfoByGlobalWarpIndexByLaunchID[launchID][globalWarpIndex];
+				accessInfoByGlobalWarpIndexByLaunchID[launchID][globalWarpIndex] = index;
 				index += temp;
 			}
 			firstAccessIndexByLaunchID[launchID+1] = index;
 		}
 
+		// Copy memory accesses into sorted order.
 		accesses.resize(header.mem_access_count);
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			launch_info_t* info = (launch_info_t*) &mmap[header.launch_info_offset + ma->grid_launch_id * header.launch_info_size];
-			uint64_t blockIdx = (ma->block_idx_z * info->grid_dim_y + ma->block_idx_y) * info->grid_dim_x + ma->block_idx_x;
-			uint64_t index = accessInfoByBlockIdxByLaunchID[ma->grid_launch_id][blockIdx]++;
+			WarpIndexFactors& factors = warpIndexFactorsByLaunchID[ma->grid_launch_id];
+			int32_t globalWarpIndex = factors.z * ma->block_idx_z + factors.y * ma->block_idx_y + factors.x * ma->block_idx_x + factors.local_warp_id * ma->local_warp_id;
+			uint64_t index = accessInfoByGlobalWarpIndexByLaunchID[ma->grid_launch_id][globalWarpIndex]++;
 			accesses[index] = *ma;
 		}
 
 		auto t5 = std::chrono::high_resolution_clock::now();
-
-		// SORTING
-
-		uint64_t begin = 0;
-		for (uint64_t launchID = 0; launchID < header.launch_info_count; launchID++) {
-			for (uint64_t blockIdx = 0; blockIdx < accessInfoByBlockIdxByLaunchID[launchID].size(); blockIdx++) {
-				uint64_t end = accessInfoByBlockIdxByLaunchID[launchID][blockIdx];
-				std::stable_sort(&accesses[begin], &accesses[end], [] (const mem_access_t& a, const mem_access_t& b) {
-					if (a.local_warp_id != b.local_warp_id) return a.local_warp_id < b.local_warp_id;
-					return false;
-				});
-				begin = end;
-			}
-		}
-		
-		auto t6 = std::chrono::high_resolution_clock::now();
 
 		printf("init:         %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
 		printf("validate:     %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
 		printf("instructions: %.9fs\n", std::chrono::duration<double>(t3 - t2).count());
 		printf("regions:      %.9fs\n", std::chrono::duration<double>(t4 - t3).count());
 		printf("copy:         %.9fs\n", std::chrono::duration<double>(t5 - t4).count());
-		printf("sort:         %.9fs\n", std::chrono::duration<double>(t6 - t5).count());
 
 		return "";
 	}
