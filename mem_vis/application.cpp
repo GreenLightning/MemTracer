@@ -99,6 +99,8 @@ struct Trace {
 	}
 
 	std::string load(std::string filename) {
+		auto t0 = std::chrono::high_resolution_clock::now();
+
 		this->filename = filename;
 
 		std::error_code err_code;
@@ -125,6 +127,10 @@ struct Trace {
 		}
 
 		memcpy(&header, mmap.data(), header.header_size);
+
+		auto t1 = std::chrono::high_resolution_clock::now();
+
+		// VALIDATE
 
 		// Save hash and clear memory for hash computation.
 		meow_u128 expectedHash;
@@ -159,6 +165,8 @@ struct Trace {
 		}
 
 		// TODO: Validate other header fields.
+
+		auto t2 = std::chrono::high_resolution_clock::now();
 
 		// TRACE INSTRUCTIONS
 
@@ -215,6 +223,8 @@ struct Trace {
 			instructionsByLaunchAndAddr[key].index = i;
 		}
 
+		auto t3 = std::chrono::high_resolution_clock::now();
+
 		// TRACE REGIONS
 
 		regions.reserve(header.mem_region_count);
@@ -230,9 +240,9 @@ struct Trace {
 			regions.push_back(trace_region);
 		}
 
-		// SORTING
+		auto t4 = std::chrono::high_resolution_clock::now();
 
-		auto t0 = std::chrono::high_resolution_clock::now();
+		// COPY
 
 		accesses.reserve(header.mem_access_count);
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
@@ -240,7 +250,9 @@ struct Trace {
 			accesses.push_back(*ma);
 		}
 
-		auto t1 = std::chrono::high_resolution_clock::now();
+		auto t5 = std::chrono::high_resolution_clock::now();
+
+		// SORTING
 
 		std::stable_sort(accesses.begin(), accesses.end(), [] (const mem_access_t& a, const mem_access_t& b) {
 			if (a.grid_launch_id != b.grid_launch_id) return a.grid_launch_id < b.grid_launch_id;
@@ -251,7 +263,7 @@ struct Trace {
 			return false;
 		});
 		
-		auto t2 = std::chrono::high_resolution_clock::now();
+		auto t6 = std::chrono::high_resolution_clock::now();
 
 		uint64_t last_grid_launch_id = UINT64_MAX;
 		for (int64_t i = 0; i < static_cast<int64_t>(accesses.size()); i++) {
@@ -262,8 +274,12 @@ struct Trace {
 			}
 		}
 
-		printf("copy: %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
-		printf("sort: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+		printf("init:         %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
+		printf("validate:     %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+		printf("instructions: %.9fs\n", std::chrono::duration<double>(t3 - t2).count());
+		printf("regions:      %.9fs\n", std::chrono::duration<double>(t4 - t3).count());
+		printf("copy:         %.9fs\n", std::chrono::duration<double>(t5 - t4).count());
+		printf("sort:         %.9fs\n", std::chrono::duration<double>(t6 - t5).count());
 
 		return "";
 	}
@@ -1330,11 +1346,16 @@ struct Workspace {
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
 	ws->trace = std::move(trace);
+
+	auto t0 = std::chrono::high_resolution_clock::now();
+
 	ws->analysis.resize(ws->trace->header.launch_info_count);
 	for (uint64_t i = 0; i < ws->trace->header.launch_info_count; i++) {
 		ws->analysis[i].init(ws->trace.get(), i);
 	}
-	
+
+	auto t1 = std::chrono::high_resolution_clock::now();
+
 	AnalysisSet* as = &ws->analysis[0];
 	ws->reference = buildReferenceTree(ws->trace.get());
 	ws->reconstruction = reconstructTree(as, &as->caa);
@@ -1349,6 +1370,11 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		ws->fullReconstruction = mergeTrees(&ws->fullReconstruction, &partial);
 	}
 	ws->fullReconstruction = pruneTree(&ws->fullReconstruction);
+
+	auto t2 = std::chrono::high_resolution_clock::now();
+
+	printf("analysis:       %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
+	printf("reconstruction: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
 
 	TreeStats ref = countTree(&ws->reference);
 	{
