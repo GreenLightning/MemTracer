@@ -66,26 +66,38 @@ struct TraceRegion {
 	uint64_t object_count;
 };
 
-struct Trace {
+class Trace {
+public:
 	std::string filename;
 	mio::mmap_source mmap;
 	header_t header = {};
 	std::vector<std::string> strings;
-	std::unordered_map<TraceInstructionKey, TraceInstruction> instructionsByLaunchAndAddr;
 	std::vector<TraceInstruction> instructions;
 	std::vector<TraceRegion> regions;
 	std::vector<mem_access_t> accesses;
+
+private:
+	std::unordered_map<TraceInstructionKey, TraceInstruction> instructionsByKey;
 	std::unordered_map<uint64_t, int64_t> firstAccessIndexByLaunchID;
 
+public:
 	~Trace() {
 		mmap.unmap();
 	}
 
 	void renderGuiInWindow();
 
+	uint64_t begin_index(uint64_t grid_launch_id) {
+		return firstAccessIndexByLaunchID[grid_launch_id];
+	}
+
+	uint64_t end_index(uint64_t grid_launch_id) {
+		return grid_launch_id+1 >= header.launch_info_count ? accesses.size() : firstAccessIndexByLaunchID[grid_launch_id+1];
+	}
+
 	TraceInstruction* find_instr(uint64_t grid_launch_id, uint64_t instr_addr) {
-		auto it = this->instructionsByLaunchAndAddr.find(TraceInstructionKey{grid_launch_id, instr_addr});
-		return it == this->instructionsByLaunchAndAddr.end() ? nullptr : &it->second;
+		auto it = this->instructionsByKey.find(TraceInstructionKey{grid_launch_id, instr_addr});
+		return it == this->instructionsByKey.end() ? nullptr : &it->second;
 	}
 
 	TraceRegion* find_region(uint64_t grid_launch_id, uint64_t mem_region_id) {
@@ -173,8 +185,8 @@ struct Trace {
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
 			auto key = TraceInstructionKey{ma->grid_launch_id, ma->instr_addr};
-			auto count = instructionsByLaunchAndAddr.count(key);
-			TraceInstruction& instr = instructionsByLaunchAndAddr[key];
+			auto count = instructionsByKey.count(key);
+			TraceInstruction& instr = instructionsByKey[key];
 			if (count == 0) {
 				instr.grid_launch_id = ma->grid_launch_id;
 				instr.instr_addr = ma->instr_addr;
@@ -196,7 +208,7 @@ struct Trace {
 			}
 		}
 
-		for (auto& pair : instructionsByLaunchAndAddr) {
+		for (auto& pair : instructionsByKey) {
 			TraceInstruction& instr = pair.second;
 			for (int i = 0; i < header.mem_region_count; i++) {
 				mem_region_t* region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
@@ -207,7 +219,7 @@ struct Trace {
 			}
 		}
 
-		for (auto& pair : instructionsByLaunchAndAddr) {
+		for (auto& pair : instructionsByKey) {
 			instructions.push_back(pair.second);
 		}
 
@@ -220,7 +232,7 @@ struct Trace {
 			TraceInstruction& instr = instructions[i];
 			instr.index = i;
 			auto key = TraceInstructionKey{instr.grid_launch_id, instr.instr_addr};
-			instructionsByLaunchAndAddr[key].index = i;
+			instructionsByKey[key].index = i;
 		}
 
 		auto t3 = std::chrono::high_resolution_clock::now();
@@ -316,9 +328,8 @@ void InstructionBasedSizeAnalysis::run(Trace* trace) {
 	std::vector<uint64_t> last_addresses;
 	last_addresses.resize(trace->instructions.size() * 32);
 
-	for (int64_t i = trace->firstAccessIndexByLaunchID[this->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+	for (uint64_t i = trace->begin_index(this->grid_launch_id), n = trace->end_index(this->grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -379,9 +390,8 @@ void LinearAccessAnalysis::run(Trace* trace) {
 
 	this->flags.resize(this->region->object_count);
 
-	for (int64_t i = trace->firstAccessIndexByLaunchID[this->region->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+	for (uint64_t i = trace->begin_index(this->region->grid_launch_id), n = trace->end_index(this->region->grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -427,9 +437,8 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 
 	matrix.resize(this->region->object_count * this->region->object_count);
 
-	for (int64_t i = trace->firstAccessIndexByLaunchID[this->region->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+	for (uint64_t i = trace->begin_index(this->region->grid_launch_id), n = trace->end_index(this->region->grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -474,9 +483,8 @@ void StackAnalysis::run(Trace* trace) {
 
 	matrix.resize(this->region->object_count * this->region->object_count);
 
-	for (int64_t i = trace->firstAccessIndexByLaunchID[this->region->grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+	for (uint64_t i = trace->begin_index(this->region->grid_launch_id), n = trace->end_index(this->region->grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != this->region->grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -555,9 +563,8 @@ void RegionLinkAnalysis::run(Trace* trace) {
 	int32_t last_local_warp_id = -1;
 	int64_t last_access[32];
 
-	for (int64_t i = trace->firstAccessIndexByLaunchID[grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+	for (uint64_t i = trace->begin_index(grid_launch_id), n = trace->end_index(grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
-		if (ma->grid_launch_id != grid_launch_id) break;
 
 		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
 			last_block_idx_z = ma->block_idx_z;
@@ -683,9 +690,8 @@ struct Grid {
 			int targetWarpIndex = targetThreadIndex / 32;
 			int targetAccessIndex = targetThreadIndex % 32;
 
-			for (int64_t i = trace->firstAccessIndexByLaunchID[grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+			for (uint64_t i = trace->begin_index(grid_launch_id), n = trace->end_index(grid_launch_id); i < n; i++) {
 				mem_access_t* ma = &trace->accesses[i];
-				if (ma->grid_launch_id != grid_launch_id) break;
 				if (ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex || ma->addrs[targetAccessIndex] == 0) continue;
 				
 				GridInstruction instr = {};
@@ -752,9 +758,8 @@ struct Grid {
 			counts.resize(heightInThreads * widthInThreads);
 			maxCount = 0;
 			if (trace) {
-				for (int64_t i = trace->firstAccessIndexByLaunchID[grid_launch_id]; i < static_cast<int64_t>(trace->accesses.size()); i++) {
+				for (uint64_t i = trace->begin_index(grid_launch_id), n = trace->end_index(grid_launch_id); i < n; i++) {
 					mem_access_t* ma = &trace->accesses[i];
-					if (ma->grid_launch_id != grid_launch_id) break;
 					if (ma->block_idx_z != 0) continue;
 
 					for (int i = 0; i < 32; i++) {
