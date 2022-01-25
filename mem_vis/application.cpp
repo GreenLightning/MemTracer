@@ -78,7 +78,7 @@ public:
 
 private:
 	std::unordered_map<TraceInstructionKey, TraceInstruction> instructionsByKey;
-	std::unordered_map<uint64_t, int64_t> firstAccessIndexByLaunchID;
+	std::vector<uint64_t> firstAccessIndexByLaunchID;
 
 public:
 	~Trace() {
@@ -92,7 +92,7 @@ public:
 	}
 
 	uint64_t end_index(uint64_t grid_launch_id) {
-		return grid_launch_id+1 >= header.launch_info_count ? accesses.size() : firstAccessIndexByLaunchID[grid_launch_id+1];
+		return firstAccessIndexByLaunchID[grid_launch_id+1];
 	}
 
 	TraceInstruction* find_instr(uint64_t grid_launch_id, uint64_t instr_addr) {
@@ -182,8 +182,12 @@ public:
 
 		// TRACE INSTRUCTIONS
 
+		std::vector<uint64_t> accessCountsByLaunchID;
+		accessCountsByLaunchID.resize(header.launch_info_count);
+
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
+			accessCountsByLaunchID[ma->grid_launch_id]++;
 			auto key = TraceInstructionKey{ma->grid_launch_id, ma->instr_addr};
 			auto count = instructionsByKey.count(key);
 			TraceInstruction& instr = instructionsByKey[key];
@@ -256,35 +260,42 @@ public:
 
 		// COPY
 
-		accesses.reserve(header.mem_access_count);
+		// Compute prefix sum of access counts.
+		firstAccessIndexByLaunchID.resize(header.launch_info_count + 1);
+		for (int i = 0; i < header.launch_info_count; i++) {
+			firstAccessIndexByLaunchID[i+1] = firstAccessIndexByLaunchID[i] + accessCountsByLaunchID[i];
+		}
+
+		std::vector<uint64_t> nextIndexByLaunchID;
+		nextIndexByLaunchID.resize(header.launch_info_count);
+		for (int i = 0; i < nextIndexByLaunchID.size(); i++) {
+			nextIndexByLaunchID[i] = firstAccessIndexByLaunchID[i];
+		}
+
+		accesses.resize(header.mem_access_count);
 		for (int64_t i = 0; i < static_cast<int64_t>(header.mem_access_count); i++) {
 			mem_access_t* ma = (mem_access_t*) &mmap[header.mem_access_offset + i * header.mem_access_size];
-			accesses.push_back(*ma);
+			uint64_t index = nextIndexByLaunchID[ma->grid_launch_id]++;
+			accesses[index] = *ma;
 		}
 
 		auto t5 = std::chrono::high_resolution_clock::now();
 
 		// SORTING
 
-		std::stable_sort(accesses.begin(), accesses.end(), [] (const mem_access_t& a, const mem_access_t& b) {
-			if (a.grid_launch_id != b.grid_launch_id) return a.grid_launch_id < b.grid_launch_id;
-			if (a.block_idx_z != b.block_idx_z) return a.block_idx_z < b.block_idx_z;
-			if (a.block_idx_y != b.block_idx_y) return a.block_idx_y < b.block_idx_y;
-			if (a.block_idx_x != b.block_idx_x) return a.block_idx_x < b.block_idx_x;
-			if (a.local_warp_id != b.local_warp_id) return a.local_warp_id < b.local_warp_id;
-			return false;
-		});
+		for (int i = 0; i < header.launch_info_count; i++) {
+			uint64_t begin = firstAccessIndexByLaunchID[i];
+			uint64_t end = firstAccessIndexByLaunchID[i+1];
+			std::stable_sort(&accesses[begin], &accesses[end], [] (const mem_access_t& a, const mem_access_t& b) {
+				if (a.block_idx_z != b.block_idx_z) return a.block_idx_z < b.block_idx_z;
+				if (a.block_idx_y != b.block_idx_y) return a.block_idx_y < b.block_idx_y;
+				if (a.block_idx_x != b.block_idx_x) return a.block_idx_x < b.block_idx_x;
+				if (a.local_warp_id != b.local_warp_id) return a.local_warp_id < b.local_warp_id;
+				return false;
+			});
+		}
 		
 		auto t6 = std::chrono::high_resolution_clock::now();
-
-		uint64_t last_grid_launch_id = UINT64_MAX;
-		for (int64_t i = 0; i < static_cast<int64_t>(accesses.size()); i++) {
-			mem_access_t* ma = &accesses[i];
-			if (ma->grid_launch_id != last_grid_launch_id) {
-				firstAccessIndexByLaunchID[ma->grid_launch_id] = i;
-				last_grid_launch_id = ma->grid_launch_id;
-			}
-		}
 
 		printf("init:         %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
 		printf("validate:     %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
