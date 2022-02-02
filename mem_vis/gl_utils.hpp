@@ -1,7 +1,5 @@
 #pragma once
 
-#include <string>
-
 #include <GL/glew.h>
 
 #ifdef _DEBUG
@@ -11,6 +9,5 @@
 	#define GL_CHECK() ((void)0)
 #endif
 
-GLuint createProgram(std::string name);
-
-void ImGuiFullWidthImage(GLuint texture, float aspect /* width / height */);
+void compile_shader(GLuint shader, const GLchar* source, const char* name);
+void link_program(GLuint program, const char* name);

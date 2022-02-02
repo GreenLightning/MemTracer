@@ -1270,6 +1270,7 @@ struct Selection {
 };
 
 #include "app_grid.cpp"
+#include "app_vis.cpp"
 
 struct Application {
 	int width, height;
@@ -1287,6 +1288,7 @@ struct Application {
 
 	std::unique_ptr<Workspace> workspace;
 	Grid grid;
+	Visualizer vis;
 	std::string status;
 };
 
@@ -1741,6 +1743,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 	Trace* trace = app.workspace ? app.workspace->trace.get() : nullptr;
 	app.grid.renderGui(trace, app.selected);
+	app.vis.renderGui(trace);
 
 	if (app.workspace) {
 		AnalysisSet& as = app.workspace->analysis[app.selected.launch_id];
