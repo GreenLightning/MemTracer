@@ -110,6 +110,11 @@ public:
 		return nullptr;
 	}
 
+	void* find_mem_contents(TraceRegion* region) {
+		if (!header.mem_contents_offset) return nullptr;
+		return &mmap[header.mem_contents_offset + region->contents_offset];
+	}
+
 	std::string load(std::string filename) {
 		auto t0 = std::chrono::high_resolution_clock::now();
 

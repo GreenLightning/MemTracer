@@ -1,19 +1,21 @@
+// MESH SHADER
+
 const char* mesh_vertex_shader_source = R"DONE(
 #version 330
 
 uniform mat4 projection;
-uniform mat4 model;
 uniform mat4 view;
+uniform mat4 model;
 
-layout (location = 0) in vec4 position;
+layout (location = 0) in vec3 position;
 
 out VDATA {
 	vec3 position;
 } vdata;
 
 void main() {
-	gl_Position = projection * view * model * position;
-	vdata.position = vec3(view * model * position);
+	gl_Position = projection * view * model * vec4(position, 1);
+	vdata.position = vec3(view * model * vec4(position, 1));
 }
 )DONE";
 
@@ -56,6 +58,104 @@ void main() {
 }
 )DONE";
 
+// BOX SHADER
+
+const char* box_vertex_shader_source = R"DONE(
+#version 330
+
+layout (location = 0) in vec3 min;
+layout (location = 1) in vec3 max;
+layout (location = 2) in vec3 color;
+
+out VDATA {
+	vec3 min;
+	vec3 max;
+	vec3 color;
+} vdata;
+
+void main() {
+	vdata.min = min;
+	vdata.max = max;
+	vdata.color = color;
+}
+)DONE";
+
+const char* box_geometry_shader_source = R"DONE(
+#version 330
+
+uniform mat4 projection;
+uniform mat4 view;
+uniform mat4 model;
+
+layout(points) in;
+layout(line_strip, max_vertices=24) out;
+
+in VDATA {
+	vec3 min;
+	vec3 max;
+	vec3 color;
+} vdata[];
+
+out vec3 color;
+
+void main() {
+	mat4 pvm = projection * view * model;
+
+	vec4 p0 = pvm * vec4(vdata[0].min.x, vdata[0].min.y, vdata[0].min.z, 1);
+	vec4 p1 = pvm * vec4(vdata[0].min.x, vdata[0].min.y, vdata[0].max.z, 1);
+	vec4 p2 = pvm * vec4(vdata[0].min.x, vdata[0].max.y, vdata[0].min.z, 1);
+	vec4 p3 = pvm * vec4(vdata[0].min.x, vdata[0].max.y, vdata[0].max.z, 1);
+	vec4 p4 = pvm * vec4(vdata[0].max.x, vdata[0].min.y, vdata[0].min.z, 1);
+	vec4 p5 = pvm * vec4(vdata[0].max.x, vdata[0].min.y, vdata[0].max.z, 1);
+	vec4 p6 = pvm * vec4(vdata[0].max.x, vdata[0].max.y, vdata[0].min.z, 1);
+	vec4 p7 = pvm * vec4(vdata[0].max.x, vdata[0].max.y, vdata[0].max.z, 1);
+
+	vec3 vc = vdata[0].color;
+
+	gl_Position = p0; color = vc; EmitVertex();
+	gl_Position = p1; color = vc; EmitVertex();
+	gl_Position = p3; color = vc; EmitVertex();
+	gl_Position = p2; color = vc; EmitVertex();
+	gl_Position = p0; color = vc; EmitVertex();
+	EndPrimitive();
+
+	gl_Position = p4; color = vc; EmitVertex();
+	gl_Position = p5; color = vc; EmitVertex();
+	gl_Position = p7; color = vc; EmitVertex();
+	gl_Position = p6; color = vc; EmitVertex();
+	gl_Position = p4; color = vc; EmitVertex();
+	EndPrimitive();
+
+	gl_Position = p0; color = vc; EmitVertex();
+	gl_Position = p4; color = vc; EmitVertex();
+	EndPrimitive();
+
+	gl_Position = p1; color = vc; EmitVertex();
+	gl_Position = p5; color = vc; EmitVertex();
+	EndPrimitive();
+
+	gl_Position = p2; color = vc; EmitVertex();
+	gl_Position = p6; color = vc; EmitVertex();
+	EndPrimitive();
+
+	gl_Position = p3; color = vc; EmitVertex();
+	gl_Position = p7; color = vc; EmitVertex();
+	EndPrimitive();
+}
+)DONE";
+
+const char* box_fragment_shader_source = R"DONE(
+#version 330
+
+layout (location = 0) out vec3 fragment;
+
+in vec3 color;
+
+void main() {
+	fragment = color;
+}
+)DONE";
+
 struct Face {
 	uint32_t idx[3] = {0, 0, 0};
 
@@ -72,6 +172,16 @@ struct std::hash<Face> {
 		uint64_t c = 4294969111ull * key.idx[2];
 		return a ^ b ^ c;
 	}
+};
+
+struct AABB {
+	float minX, minY, minZ;
+	float maxX, maxY, maxZ;
+};
+
+struct Box {
+	AABB aabb;
+	float r, g, b;
 };
 
 void matrix_multiply(float* result, float* a, float* b) {
@@ -93,16 +203,17 @@ struct Visualizer {
 	float horizontalAngle = 0;
 	float verticalAngle = 0;
 
-	GLuint program = 0;
+	GLuint meshProgram = 0;
+	GLuint boxProgram = 0;
 
-	GLuint vao = 0;
-	GLuint vbo = 0;
-	GLuint ebo = 0;
-	GLuint indices = 0;
-
-	float minX = 0.0f, minY = 0.0f, minZ = 0.0f;
-	float maxX = 0.0f, maxY = 0.0f, maxZ = 0.0f;
+	GLuint meshVAO = 0;
+	GLuint meshVBO = 0;
+	GLuint meshEBO = 0;
+	GLuint meshIndexCount = 0;
+	GLuint boxVAO = 0;
+	GLuint boxVBO = 0;
 	float centerX = 0.0f, centerY = 0.0f, centerZ = 0.0f;
+	std::vector<AABB> aabbs;
 
 	bool framebufferInit = false, framebufferSuccess = false;
 	int width = 1024, height = 768;
@@ -110,37 +221,63 @@ struct Visualizer {
 	GLuint depthbuffer = 0;
 	GLuint texture = 0;
 
-	void initShader() {
-		GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-		compile_shader(vertex_shader, mesh_vertex_shader_source, "vertex shader");
-		
-		GLuint geometry_shader = glCreateShader(GL_GEOMETRY_SHADER);
-		compile_shader(geometry_shader, mesh_geometry_shader_source, "geometry shader");
-		
-		GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-		compile_shader(fragment_shader, mesh_fragment_shader_source, "fragment shader");
+	void initShaders() {
+		{
+			GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+			compile_shader(vertex_shader, mesh_vertex_shader_source, "vertex shader");
+			
+			GLuint geometry_shader = glCreateShader(GL_GEOMETRY_SHADER);
+			compile_shader(geometry_shader, mesh_geometry_shader_source, "geometry shader");
+			
+			GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+			compile_shader(fragment_shader, mesh_fragment_shader_source, "fragment shader");
 
-		program = glCreateProgram();
-		glAttachShader(program, vertex_shader);
-		glAttachShader(program, geometry_shader);
-		glAttachShader(program, fragment_shader);
-		link_program(program, "mesh program");
+			meshProgram = glCreateProgram();
+			glAttachShader(meshProgram, vertex_shader);
+			glAttachShader(meshProgram, geometry_shader);
+			glAttachShader(meshProgram, fragment_shader);
+			link_program(meshProgram, "mesh program");
 
-		glDeleteShader(vertex_shader);
-		glDeleteShader(geometry_shader);
-		glDeleteShader(fragment_shader);
+			glDeleteShader(vertex_shader);
+			glDeleteShader(geometry_shader);
+			glDeleteShader(fragment_shader);
+		}
+
+		{
+			GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+			compile_shader(vertex_shader, box_vertex_shader_source, "vertex shader");
+			
+			GLuint geometry_shader = glCreateShader(GL_GEOMETRY_SHADER);
+			compile_shader(geometry_shader, box_geometry_shader_source, "geometry shader");
+			
+			GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+			compile_shader(fragment_shader, box_fragment_shader_source, "fragment shader");
+
+			boxProgram = glCreateProgram();
+			glAttachShader(boxProgram, vertex_shader);
+			glAttachShader(boxProgram, geometry_shader);
+			glAttachShader(boxProgram, fragment_shader);
+			link_program(boxProgram, "box program");
+
+			glDeleteShader(vertex_shader);
+			glDeleteShader(geometry_shader);
+			glDeleteShader(fragment_shader);
+		}
 
 		GL_CHECK();
 	}
 
-	void extractMesh(Trace* trace) {
+	void extractMeshAndBounds(Trace* trace) {
 		// Check if trace contains memory contents.
 		if (!trace->header.mem_contents_offset) return;
 	
-		TraceRegion* vertex_region = trace->find_region(0, 4);
+		TraceRegion* node_region = trace->find_region(0, 1);
+		TraceRegion* bounds_region = trace->find_region(0, 2);
 		TraceRegion* face_region = trace->find_region(0, 3);
+		TraceRegion* vertex_region = trace->find_region(0, 4);
 
-		Face* faces = (Face*) &trace->mmap[trace->header.mem_contents_offset + face_region->contents_offset];
+		// Extract mesh data.
+		Face* faces = (Face*) trace->find_mem_contents(face_region);
 		uint64_t face_count = face_region->size / sizeof(Face);
 
 		std::vector<Face> filteredFaces;
@@ -154,23 +291,25 @@ struct Visualizer {
 			seenFaces.insert(f);
 		}
 
-		this->indices = (GLuint) (3 * filteredFaces.size());
+		this->meshIndexCount = (GLuint) (3 * filteredFaces.size());
 
-		float* vertex_data = (float*) &trace->mmap[trace->header.mem_contents_offset + vertex_region->contents_offset];
+		float* vertex_data = (float*) trace->find_mem_contents(vertex_region);
 		uint64_t vertex_count = vertex_region->size / (3 * sizeof(float));
-		minX = maxX = vertex_data[0];
-		minY = maxY = vertex_data[1];
-		minZ = maxZ = vertex_data[2];
+
+		AABB root;
+		root.minX = root.maxX = vertex_data[0];
+		root.minY = root.maxY = vertex_data[1];
+		root.minZ = root.maxZ = vertex_data[2];
 		for (uint64_t i = 0; i < vertex_count; i++) {
 			float x = vertex_data[3*i + 0];
 			float y = vertex_data[3*i + 1];
 			float z = vertex_data[3*i + 2];
-			if (x < minX) minX = x;
-			if (x > maxX) maxX = x;
-			if (y < minY) minY = y;
-			if (y > maxY) maxY = y;
-			if (z < minZ) minZ = z;
-			if (z > maxZ) maxZ = z;
+			if (x < root.minX) root.minX = x;
+			if (x > root.maxX) root.maxX = x;
+			if (y < root.minY) root.minY = y;
+			if (y > root.maxY) root.maxY = y;
+			if (z < root.minZ) root.minZ = z;
+			if (z > root.maxZ) root.maxZ = z;
 			centerX += x;
 			centerY += y;
 			centerZ += z;
@@ -180,19 +319,57 @@ struct Visualizer {
 		centerY /= vertex_count;
 		centerZ /= vertex_count;
 
-		glGenVertexArrays(1, &vao);
-		glGenBuffers(1, &vbo);
-		glGenBuffers(1, &ebo);
+		// Create mesh resources.
+		glGenVertexArrays(1, &meshVAO);
+		glGenBuffers(1, &meshVBO);
+		glGenBuffers(1, &meshEBO);
 
-		glBindVertexArray(vao);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBindVertexArray(meshVAO);
+		glBindBuffer(GL_ARRAY_BUFFER, meshVBO);
 		glBufferData(GL_ARRAY_BUFFER, vertex_region->size, vertex_data, GL_STATIC_DRAW);  
 
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, meshEBO);
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER, filteredFaces.size() * sizeof(Face), filteredFaces.data(), GL_STATIC_DRAW);
 
 		glEnableVertexAttribArray(0);
 		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, (void*)0);
+
+		glBindVertexArray(0);
+
+		// Extract bounds.
+		// This is a little involved, because the bounds are stored on the parent.
+
+		AABB* bounds = (AABB*) trace->find_mem_contents(bounds_region);
+		uint32_t* nodes = (uint32_t*) trace->find_mem_contents(node_region);
+		uint64_t node_count = node_region->size / sizeof(uint32_t);
+
+		aabbs.resize(node_count);
+		aabbs[0] = root;
+		for (uint64_t i = 0; i < node_count; i++) {
+			uint32_t node = nodes[i];
+			uint32_t payload = node & 0x7fffffffu;
+			bool isLeaf = node >> 31;
+			if (isLeaf) continue;
+
+			aabbs[i + 1] = bounds[2*i];
+			aabbs[i + payload] = bounds[2*i + 1];
+		}
+
+		// Create box resources.
+
+		glGenVertexArrays(1, &boxVAO);
+		glGenBuffers(1, &boxVBO);
+
+		glBindVertexArray(boxVAO);
+		glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
+
+		GLsizei stride = 3 * 3 * 4; // (min, max, color) * 3 floats * 4 bytes per float;
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * 3 * 4, (void*)(0*3*4));
+		glEnableVertexAttribArray(1);
+		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * 3 * 4, (void*)(1*3*4));
+		glEnableVertexAttribArray(2);
+		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3 * 3 * 4, (void*)(2*3*4));
 
 		glBindVertexArray(0);
 	}
@@ -246,71 +423,100 @@ struct Visualizer {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-		if (vao) {
-			glUseProgram(program);
+		float vfov = 60.0f / 180.0f * IM_PI;
+		float pos[3] = {0.0f, 0.0f, 0.2f};
 
-			float vfov = 60.0f / 180.0f * IM_PI;
-			float pos[3] = {0.0f, 0.0f, 0.2f};
+		float v = std::tan(0.5f * vfov);
+		float h = v * static_cast<float>(width) / static_cast<float>(height);
+		float n = 0.05f, f = 1.0f;
 
-			float v = std::tan(0.5f * vfov);
-			float h = v * static_cast<float>(width) / static_cast<float>(height);
-			float n = 0.05f, f = 1.0f;
+		float projection[16] = {
+			1/h,   0,  0, 0,
+			  0, 1/v,  0, 0,
+			  0,   0, -(f + n) / (f - n), -2.0f * f * n / (f - n),
+			  0,   0, -1, 0,
+		};
 
-			float projection[16] = {
-				1/h,   0,  0, 0,
-				  0, 1/v,  0, 0,
-				  0,   0, -(f + n) / (f - n), -2.0f * f * n / (f - n),
-				  0,   0, -1, 0,
-			};
+		float view[16] = {
+			1, 0, 0, -pos[0],
+			0, 1, 0, -pos[1],
+			0, 0, 1, -pos[2],
+			0, 0, 0, 1,
+		};
 
-			float view[16] = {
-				1, 0, 0, -pos[0],
-				0, 1, 0, -pos[1],
-				0, 0, 1, -pos[2],
-				0, 0, 0, 1,
-			};
+		float s = std::sin(horizontalAngle);
+		float c = std::cos(horizontalAngle);
+		float horizontal[16] = {
+			 c, 0, s, 0,
+			 0, 1, 0, 0,
+			-s, 0, c, 0,
+			 0, 0, 0, 1,
+		};
 
-			float s = std::sin(horizontalAngle);
-			float c = std::cos(horizontalAngle);
-			float horizontal[16] = {
-				 c, 0, s, 0,
-				 0, 1, 0, 0,
-				-s, 0, c, 0,
-				 0, 0, 0, 1,
-			};
+		s = std::sin(verticalAngle);
+		c = std::cos(verticalAngle);
+		float vertical[16] = {
+			1, 0,  0, 0,
+			0, c, -s, 0,
+			0, s,  c, 0,
+			0, 0,  0, 1,
+		};
 
-			s = std::sin(verticalAngle);
-			c = std::cos(verticalAngle);
-			float vertical[16] = {
-				1, 0,  0, 0,
-				0, c, -s, 0,
-				0, s,  c, 0,
-				0, 0,  0, 1,
-			};
+		float rotation[16];
+		matrix_multiply(rotation, horizontal, vertical);
 
-			float rotation[16];
-			matrix_multiply(rotation, horizontal, vertical);
+		float translation[16] = {
+			1, 0, 0, -centerX,
+			0, 1, 0, -centerY,
+			0, 0, 1, -centerZ,
+			0, 0, 0, 1,
+		};
 
-			float translation[16] = {
-				1, 0, 0, -centerX,
-				0, 1, 0, -centerY,
-				0, 0, 1, -centerZ,
-				0, 0, 0, 1,
-			};
+		float model[16];
+		matrix_multiply(model, rotation, translation);
 
-			float model[16];
-			matrix_multiply(model, rotation, translation);
+		if (meshVAO) {
+			glUseProgram(meshProgram);
 
 			GLint location;
-			location = glGetUniformLocation(program, "projection");
+			location = glGetUniformLocation(meshProgram, "projection");
 			glUniformMatrix4fv(location, 1, GL_TRUE, projection);
-			location = glGetUniformLocation(program, "view");
+			location = glGetUniformLocation(meshProgram, "view");
 			glUniformMatrix4fv(location, 1, GL_TRUE, view);
-			location = glGetUniformLocation(program, "model");
+			location = glGetUniformLocation(meshProgram, "model");
 			glUniformMatrix4fv(location, 1, GL_TRUE, model);
 
-			glBindVertexArray(vao);
-			glDrawElements(GL_TRIANGLES, indices, GL_UNSIGNED_INT, 0);
+			glBindVertexArray(meshVAO);
+			glDrawElements(GL_TRIANGLES, meshIndexCount, GL_UNSIGNED_INT, 0);
+			glBindVertexArray(0);
+
+			glUseProgram(0);
+		}
+
+		if (boxVAO) {
+			glUseProgram(boxProgram);
+
+			GLint location;
+			location = glGetUniformLocation(boxProgram, "projection");
+			glUniformMatrix4fv(location, 1, GL_TRUE, projection);
+			location = glGetUniformLocation(boxProgram, "view");
+			glUniformMatrix4fv(location, 1, GL_TRUE, view);
+			location = glGetUniformLocation(boxProgram, "model");
+			glUniformMatrix4fv(location, 1, GL_TRUE, model);
+
+			std::vector<Box> boxes;
+			boxes.reserve(aabbs.size());
+
+			for (int i = 0; i < aabbs.size(); i++) {
+				Box box;
+				box.aabb = aabbs[i];
+				box.r = 0.0f; box.g = 0.0f; box.b = 0.0f;
+				boxes.push_back(box);
+			}
+
+			glBindVertexArray(boxVAO);
+			glBufferData(GL_ARRAY_BUFFER, boxes.size() * sizeof(Box), boxes.data(), GL_STREAM_DRAW);
+			glDrawArrays(GL_POINTS, 0, (GLsizei) boxes.size());
 			glBindVertexArray(0);
 
 			glUseProgram(0);
@@ -322,12 +528,12 @@ struct Visualizer {
 	}
 
 	void renderGui(Trace* trace) {
-		if (!program) {
-			initShader();
+		if (!meshProgram) {
+			initShaders();
 		}
 
-		if (trace && !vao) {
-			extractMesh(trace);
+		if (trace && !meshVAO) {
+			extractMeshAndBounds(trace);
 		}
 
 		if (!framebufferInit) {
