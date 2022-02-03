@@ -52,6 +52,7 @@ in vec3 normal;
 
 void main() {
 	color = vec3(0.5, 0.5, 0.5) + 0.5 * normal;
+	// color = vec3(gl_FragCoord.z);
 }
 )DONE";
 
@@ -73,13 +74,35 @@ struct std::hash<Face> {
 	}
 };
 
+void matrix_multiply(float* result, float* a, float* b) {
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
+			float v = 0;
+			for (int k = 0; k < 4; k++) {
+				v += a[4*i + k] * b[4*k + j];
+			}
+			result[4*i + j] = v;
+		}
+	}
+}
+
 struct Visualizer {
+	bool culling = true;
+
+	bool dragging = false;
+	float horizontalAngle = 0;
+	float verticalAngle = 0;
+
 	GLuint program = 0;
 
 	GLuint vao = 0;
 	GLuint vbo = 0;
 	GLuint ebo = 0;
 	GLuint indices = 0;
+
+	float minX = 0.0f, minY = 0.0f, minZ = 0.0f;
+	float maxX = 0.0f, maxY = 0.0f, maxZ = 0.0f;
+	float centerX = 0.0f, centerY = 0.0f, centerZ = 0.0f;
 
 	bool framebufferInit = false, framebufferSuccess = false;
 	int width = 1024, height = 768;
@@ -117,8 +140,6 @@ struct Visualizer {
 		TraceRegion* vertex_region = trace->find_region(0, 4);
 		TraceRegion* face_region = trace->find_region(0, 3);
 
-		void* vertex_data = &trace->mmap[trace->header.mem_contents_offset + vertex_region->contents_offset];
-
 		Face* faces = (Face*) &trace->mmap[trace->header.mem_contents_offset + face_region->contents_offset];
 		uint64_t face_count = face_region->size / sizeof(Face);
 
@@ -134,6 +155,30 @@ struct Visualizer {
 		}
 
 		this->indices = (GLuint) (3 * filteredFaces.size());
+
+		float* vertex_data = (float*) &trace->mmap[trace->header.mem_contents_offset + vertex_region->contents_offset];
+		uint64_t vertex_count = vertex_region->size / (3 * sizeof(float));
+		minX = maxX = vertex_data[0];
+		minY = maxY = vertex_data[1];
+		minZ = maxZ = vertex_data[2];
+		for (uint64_t i = 0; i < vertex_count; i++) {
+			float x = vertex_data[3*i + 0];
+			float y = vertex_data[3*i + 1];
+			float z = vertex_data[3*i + 2];
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+			if (z < minZ) minZ = z;
+			if (z > maxZ) maxZ = z;
+			centerX += x;
+			centerY += y;
+			centerZ += z;
+		}
+
+		centerX /= vertex_count;
+		centerY /= vertex_count;
+		centerZ /= vertex_count;
 
 		glGenVertexArrays(1, &vao);
 		glGenBuffers(1, &vbo);
@@ -152,6 +197,130 @@ struct Visualizer {
 		glBindVertexArray(0);
 	}
 
+	void initFramebuffer() {
+		framebufferInit = true;
+
+		glGenFramebuffers(1, &framebuffer);
+		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+		glGenRenderbuffers(1, &depthbuffer);
+		glBindRenderbuffer(GL_RENDERBUFFER, depthbuffer);
+		glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer);
+
+		glGenTextures(1, &texture);
+		glBindTexture(GL_TEXTURE_2D, texture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0);
+
+		GLenum drawBuffers[1] = { GL_COLOR_ATTACHMENT0 };
+		glDrawBuffers(sizeof(drawBuffers)/sizeof(drawBuffers[0]), drawBuffers);
+
+		framebufferSuccess = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glBindRenderbuffer(GL_RENDERBUFFER, 0);
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+
+	void renderToTexture() {
+		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+		glViewport(0, 0, width, height);
+		if (dragging) {
+			glClearColor(0.3f, 0.8f, 0.2f, 1.0f);
+		} else {
+			glClearColor(0.0f, 0.7f, 0.3f, 1.0f);
+		}
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+		if (culling) {
+			glEnable(GL_CULL_FACE);
+			glCullFace(GL_BACK);
+		} else {
+			glDisable(GL_CULL_FACE);
+		}
+
+		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_LESS);
+
+		if (vao) {
+			glUseProgram(program);
+
+			float vfov = 60.0f / 180.0f * IM_PI;
+			float pos[3] = {0.0f, 0.0f, 0.2f};
+
+			float v = std::tan(0.5f * vfov);
+			float h = v * static_cast<float>(width) / static_cast<float>(height);
+			float n = 0.05f, f = 1.0f;
+
+			float projection[16] = {
+				1/h,   0,  0, 0,
+				  0, 1/v,  0, 0,
+				  0,   0, -(f + n) / (f - n), -2.0f * f * n / (f - n),
+				  0,   0, -1, 0,
+			};
+
+			float view[16] = {
+				1, 0, 0, -pos[0],
+				0, 1, 0, -pos[1],
+				0, 0, 1, -pos[2],
+				0, 0, 0, 1,
+			};
+
+			float s = std::sin(horizontalAngle);
+			float c = std::cos(horizontalAngle);
+			float horizontal[16] = {
+				 c, 0, s, 0,
+				 0, 1, 0, 0,
+				-s, 0, c, 0,
+				 0, 0, 0, 1,
+			};
+
+			s = std::sin(verticalAngle);
+			c = std::cos(verticalAngle);
+			float vertical[16] = {
+				1, 0,  0, 0,
+				0, c, -s, 0,
+				0, s,  c, 0,
+				0, 0,  0, 1,
+			};
+
+			float rotation[16];
+			matrix_multiply(rotation, horizontal, vertical);
+
+			float translation[16] = {
+				1, 0, 0, -centerX,
+				0, 1, 0, -centerY,
+				0, 0, 1, -centerZ,
+				0, 0, 0, 1,
+			};
+
+			float model[16];
+			matrix_multiply(model, rotation, translation);
+
+			GLint location;
+			location = glGetUniformLocation(program, "projection");
+			glUniformMatrix4fv(location, 1, GL_TRUE, projection);
+			location = glGetUniformLocation(program, "view");
+			glUniformMatrix4fv(location, 1, GL_TRUE, view);
+			location = glGetUniformLocation(program, "model");
+			glUniformMatrix4fv(location, 1, GL_TRUE, model);
+
+			glBindVertexArray(vao);
+			glDrawElements(GL_TRIANGLES, indices, GL_UNSIGNED_INT, 0);
+			glBindVertexArray(0);
+
+			glUseProgram(0);
+		}
+
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+		GL_CHECK();
+	}
+
 	void renderGui(Trace* trace) {
 		if (!program) {
 			initShader();
@@ -162,99 +331,48 @@ struct Visualizer {
 		}
 
 		if (!framebufferInit) {
-			framebufferInit = true;
-
-			glGenFramebuffers(1, &framebuffer);
-			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
-			glGenRenderbuffers(1, &depthbuffer);
-			glBindRenderbuffer(GL_RENDERBUFFER, depthbuffer);
-			glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
-			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer);
-
-			glGenTextures(1, &texture);
-			glBindTexture(GL_TEXTURE_2D, texture);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-			glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0);
-
-			GLenum drawBuffers[1] = { GL_COLOR_ATTACHMENT0 };
-			glDrawBuffers(sizeof(drawBuffers)/sizeof(drawBuffers[0]), drawBuffers);
-
-			framebufferSuccess = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-	
-			glBindFramebuffer(GL_FRAMEBUFFER, 0);
-			glBindRenderbuffer(GL_RENDERBUFFER, 0);
-			glBindTexture(GL_TEXTURE_2D, 0);
-		}
-
-		if (framebufferSuccess) {
-			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
-			glViewport(0, 0, width, height);
-			glClearColor(0.0f, 0.7f, 0.3f, 1.0f);
-			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-			if (vao) {
-				glUseProgram(program);
-
-				float vfov = 60.0f / 180.0f * IM_PI;
-				float pos[3] = {-0.016000f, 0.108000f, 0.210000f};
-
-				float v = std::tan(0.5f * vfov);
-				float h = v * static_cast<float>(width) / static_cast<float>(height);
-				float z = 0.01f;
-
-				float projection[16] = {
-					1/h,   0,    0, 0,
-					  0, 1/v,    0, 0,
-					  0,   0, -2*z, 0,
-					  0,   0,   -1, 0,
-				};
-
-				float view[16] = {
-					1, 0, 0, -pos[0],
-					0, 1, 0, -pos[1],
-					0, 0, 1, -pos[2],
-					0, 0, 0, 1,
-				};
-
-				float model[16] = {
-					1, 0, 0, 0,
-					0, 1, 0, 0,
-					0, 0, 1, 0,
-					0, 0, 0, 1,
-				};
-
-				GLint location;
-				location = glGetUniformLocation(program, "projection");
-				glUniformMatrix4fv(location, 1, GL_TRUE, projection);
-				location = glGetUniformLocation(program, "view");
-				glUniformMatrix4fv(location, 1, GL_TRUE, view);
-				location = glGetUniformLocation(program, "model");
-				glUniformMatrix4fv(location, 1, GL_TRUE, model);
-
-				glBindVertexArray(vao);
-				glDrawElements(GL_TRIANGLES, indices, GL_UNSIGNED_INT, 0);
-				glBindVertexArray(0);
-
-				glUseProgram(0);
-			}
-
-			glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-			GL_CHECK();
+			initFramebuffer();
 		}
 
 		ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 		if (ImGui::Begin("Visualizer", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-			if (texture != 0) {
-				ImVec2 avail = ImGui::GetContentRegionAvail();
-				ImVec2 size(avail.x, avail.x * static_cast<float>(height) / static_cast<float>(width));
-				ImGui::Image((void*)(intptr_t)this->texture, size, ImVec2(0, 1), ImVec2(1, 0));
+			ImGui::Checkbox("Culling", &culling);
+
+			ImVec2 avail = ImGui::GetContentRegionAvail();
+			ImVec2 size(avail.x, avail.x * static_cast<float>(height) / static_cast<float>(width));
+
+			if (dragging) {
+				if (!ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+					dragging = false;
+				}
+			} else {
+				ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+				ImRect bb(cursorPos, ImVec2(cursorPos.x + size.x, cursorPos.y + size.y));
+				ImGuiID id = ImGui::GetID("Texture");
+				if (ImGui::ButtonBehavior(bb, id, nullptr, nullptr, ImGuiButtonFlags_PressedOnClick)) {
+					dragging = true;
+				}
 			}
+
+			if (dragging) {
+				ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+				ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+				horizontalAngle += delta.x / 200.0f;
+				verticalAngle += delta.y / 200.0f;
+				if (verticalAngle < -IM_PI) {
+					verticalAngle = -IM_PI;
+				} else if (verticalAngle > IM_PI) {
+					verticalAngle = IM_PI;
+				}
+			}
+
+			if (framebufferSuccess) {
+				renderToTexture();
+			}
+
+			// Flip uv coordinates to convert from OpenGL (y up) to ImGui (y down) convention.
+			ImGui::Image((void*)(intptr_t)this->texture, size, ImVec2(0, 1), ImVec2(1, 0));
 		}
 		ImGui::PopStyleVar();
 		ImGui::End();
