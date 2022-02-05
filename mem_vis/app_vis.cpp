@@ -216,7 +216,8 @@ struct Visualizer {
 	std::vector<AABB> aabbs;
 
 	bool framebufferInit = false, framebufferSuccess = false;
-	int width = 1024, height = 768;
+	int targetWidth = 1024, targetHeight = 768;
+	int width = 0, height = 0;
 	GLuint framebuffer = 0;
 	GLuint depthbuffer = 0;
 	GLuint texture = 0;
@@ -374,32 +375,50 @@ struct Visualizer {
 		glBindVertexArray(0);
 	}
 
-	void initFramebuffer() {
-		framebufferInit = true;
+	void updateFramebuffer() {
+		if (!framebufferInit) {
+			framebufferInit = true;
+			width = targetWidth;
+			height = targetHeight;
 
-		glGenFramebuffers(1, &framebuffer);
-		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+			glGenFramebuffers(1, &framebuffer);
+			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 
-		glGenRenderbuffers(1, &depthbuffer);
-		glBindRenderbuffer(GL_RENDERBUFFER, depthbuffer);
-		glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
-		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer);
+			glGenRenderbuffers(1, &depthbuffer);
+			glBindRenderbuffer(GL_RENDERBUFFER, depthbuffer);
+			glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
+			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer);
 
-		glGenTextures(1, &texture);
-		glBindTexture(GL_TEXTURE_2D, texture);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0);
+			glGenTextures(1, &texture);
+			glBindTexture(GL_TEXTURE_2D, texture);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0);
 
-		GLenum drawBuffers[1] = { GL_COLOR_ATTACHMENT0 };
-		glDrawBuffers(sizeof(drawBuffers)/sizeof(drawBuffers[0]), drawBuffers);
+			GLenum drawBuffers[1] = { GL_COLOR_ATTACHMENT0 };
+			glDrawBuffers(sizeof(drawBuffers)/sizeof(drawBuffers[0]), drawBuffers);
 
-		framebufferSuccess = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+			framebufferSuccess = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-		glBindRenderbuffer(GL_RENDERBUFFER, 0);
-		glBindTexture(GL_TEXTURE_2D, 0);
+			glBindFramebuffer(GL_FRAMEBUFFER, 0);
+			glBindRenderbuffer(GL_RENDERBUFFER, 0);
+			glBindTexture(GL_TEXTURE_2D, 0);
+		} else if (width != targetWidth || height != targetHeight) {
+			width = targetWidth;
+			height = targetHeight;
+
+			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+			glBindRenderbuffer(GL_RENDERBUFFER, depthbuffer);
+			glBindTexture(GL_TEXTURE_2D, texture);
+
+			glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+
+			glBindFramebuffer(GL_FRAMEBUFFER, 0);
+			glBindRenderbuffer(GL_RENDERBUFFER, 0);
+			glBindTexture(GL_TEXTURE_2D, 0);
+		}
 	}
 
 	void renderToTexture() {
@@ -536,9 +555,7 @@ struct Visualizer {
 			extractMeshAndBounds(trace);
 		}
 
-		if (!framebufferInit) {
-			initFramebuffer();
-		}
+		updateFramebuffer();
 
 		ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -546,7 +563,9 @@ struct Visualizer {
 			ImGui::Checkbox("Culling", &culling);
 
 			ImVec2 avail = ImGui::GetContentRegionAvail();
-			ImVec2 size(avail.x, avail.x * static_cast<float>(height) / static_cast<float>(width));
+			targetWidth = (int) avail.x;
+			targetHeight = (int) avail.y;
+			ImVec2 size(width, height);
 
 			if (dragging) {
 				if (!ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
