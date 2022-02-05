@@ -198,6 +198,9 @@ void matrix_multiply(float* result, float* a, float* b) {
 
 struct Visualizer {
 	bool culling = true;
+	bool model = true;
+	int mode = 0;
+	int count = 0;
 
 	bool dragging = false;
 	float horizontalAngle = 0;
@@ -206,6 +209,7 @@ struct Visualizer {
 	GLuint meshProgram = 0;
 	GLuint boxProgram = 0;
 
+	Trace* cachedTrace = nullptr;
 	GLuint meshVAO = 0;
 	GLuint meshVBO = 0;
 	GLuint meshEBO = 0;
@@ -269,9 +273,23 @@ struct Visualizer {
 	}
 
 	void extractMeshAndBounds(Trace* trace) {
+		if (trace != cachedTrace) {
+			glDeleteVertexArrays(1, &meshVAO);
+			glDeleteBuffers(1, &meshVBO);
+			glDeleteBuffers(1, &meshEBO);
+			glDeleteVertexArrays(1, &boxVAO);
+			glDeleteBuffers(1, &boxVBO);
+			meshVAO = 0;
+			boxVAO = 0;
+			cachedTrace = nullptr;
+		}
+
 		// Check if trace contains memory contents.
-		if (!trace->header.mem_contents_offset) return;
-	
+		if (!trace || !trace->header.mem_contents_offset) return;
+		if (trace == cachedTrace) return;
+
+		cachedTrace = trace;
+
 		TraceRegion* node_region = trace->find_region(0, 1);
 		TraceRegion* bounds_region = trace->find_region(0, 2);
 		TraceRegion* face_region = trace->find_region(0, 3);
@@ -344,16 +362,18 @@ struct Visualizer {
 		uint32_t* nodes = (uint32_t*) trace->find_mem_contents(node_region);
 		uint64_t node_count = node_region->size / sizeof(uint32_t);
 
+		this->count = (int) node_count;
 		aabbs.resize(node_count);
 		aabbs[0] = root;
+		uint64_t bounds_index = 0;
 		for (uint64_t i = 0; i < node_count; i++) {
 			uint32_t node = nodes[i];
 			uint32_t payload = node & 0x7fffffffu;
 			bool isLeaf = node >> 31;
 			if (isLeaf) continue;
 
-			aabbs[i + 1] = bounds[2*i];
-			aabbs[i + payload] = bounds[2*i + 1];
+			aabbs[i + 1] = bounds[bounds_index++];
+			aabbs[i + payload] = bounds[bounds_index++];
 		}
 
 		// Create box resources.
@@ -421,7 +441,7 @@ struct Visualizer {
 		}
 	}
 
-	void renderToTexture() {
+	void renderToTexture(Workspace* workspace, Trace* trace, uint64_t launch_id) {
 		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 
 		glViewport(0, 0, width, height);
@@ -494,7 +514,7 @@ struct Visualizer {
 		float model[16];
 		matrix_multiply(model, rotation, translation);
 
-		if (meshVAO) {
+		if (this->model && meshVAO) {
 			glUseProgram(meshProgram);
 
 			GLint location;
@@ -533,10 +553,61 @@ struct Visualizer {
 				boxes.push_back(box);
 			}
 
+			switch (mode) {
+				// Currently accessed.
+				case 0: {
+					if (workspace) {
+						LinearAccessAnalysis* laa = &workspace->analysis[launch_id].nodes_laa;
+						for (uint64_t i = 0; i < boxes.size(); i++) {
+							if (laa->flags[i]) {
+								boxes[i].r = 1.0f;
+								boxes[i].g = 1.0f;
+								boxes[i].b = 1.0f;
+							}
+						}
+					}
+				} break;
+
+				// Current tree.
+				case 1: {
+					if (workspace && trace) {
+						Tree* tree = &workspace->preciseReconstructions[launch_id];
+						TraceRegion* node_region = trace->find_region(0, 1);
+						for (auto& node : tree->nodes) {
+							int64_t index = calculate_index(node_region, node.address);
+							Box& box = boxes.at(index);
+							box.r = 1.0f;
+							box.g = 1.0f;
+							box.b = 1.0f;
+						}
+					}
+				} break;
+
+				// Full tree.	
+				case 2: {
+					if (workspace && trace) {
+						Tree* tree = &workspace->fullReconstruction;
+						TraceRegion* node_region = trace->find_region(0, 1);
+						for (auto& node : tree->nodes) {
+							int64_t index = calculate_index(node_region, node.address);
+							Box& box = boxes.at(index);
+							box.r = 1.0f;
+							box.g = 1.0f;
+							box.b = 1.0f;
+						}
+					}
+				} break;
+			}
+
+
+			glDepthMask(false);
+
 			glBindVertexArray(boxVAO);
 			glBufferData(GL_ARRAY_BUFFER, boxes.size() * sizeof(Box), boxes.data(), GL_STREAM_DRAW);
-			glDrawArrays(GL_POINTS, 0, (GLsizei) boxes.size());
+			glDrawArrays(GL_POINTS, 0, (GLsizei) count);
 			glBindVertexArray(0);
+
+			glDepthMask(true);
 
 			glUseProgram(0);
 		}
@@ -546,14 +617,14 @@ struct Visualizer {
 		GL_CHECK();
 	}
 
-	void renderGui(Trace* trace) {
+	void renderGui(Workspace* workspace, Selection& selected) {
+		Trace* trace = workspace ? workspace->trace.get() : nullptr;
+
 		if (!meshProgram) {
 			initShaders();
 		}
 
-		if (trace && !meshVAO) {
-			extractMeshAndBounds(trace);
-		}
+		extractMeshAndBounds(trace);
 
 		updateFramebuffer();
 
@@ -561,11 +632,14 @@ struct Visualizer {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 		if (ImGui::Begin("Visualizer", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 			ImGui::Checkbox("Culling", &culling);
+			ImGui::Checkbox("Model", &model);
+			ImGui::Combo("Mode", &mode, "Currently Accessed\0Current Tree\0Full Tree\0\0");
+			ImGui::SliderInt("Count", &count, 0, (int) aabbs.size());
 
 			ImVec2 avail = ImGui::GetContentRegionAvail();
 			targetWidth = (int) avail.x;
 			targetHeight = (int) avail.y;
-			ImVec2 size(width, height);
+			ImVec2 size((float) width, (float) height);
 
 			if (dragging) {
 				if (!ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
@@ -593,7 +667,7 @@ struct Visualizer {
 			}
 
 			if (framebufferSuccess) {
-				renderToTexture();
+				renderToTexture(workspace, trace, selected.launch_id);
 			}
 
 			// Flip uv coordinates to convert from OpenGL (y up) to ImGui (y down) convention.

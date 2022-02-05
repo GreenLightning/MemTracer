@@ -66,6 +66,17 @@ struct TraceRegion {
 	uint64_t object_count;
 };
 
+uint64_t calculate_address(TraceRegion* region, int64_t index, uint64_t object_size = 0) {
+	if (!object_size) object_size = region->object_size;
+	return region->start + index * object_size;
+}
+
+int64_t calculate_index(TraceRegion* region, uint64_t address, uint64_t object_size = 0) {
+	if (!object_size) object_size = region->object_size;
+	if (address == 0) return -1;
+	return (address - region->start) / object_size;
+}
+
 class Trace {
 public:
 	std::string filename;
@@ -1050,7 +1061,7 @@ Tree buildReferenceTree(Trace* trace) {
 	TraceRegion* node_region = trace->find_region(0, 1);
 	TraceRegion* index_region = trace->find_region(0, 3);
 
-	uint32_t* node_data = (uint32_t*) &trace->mmap[trace->header.mem_contents_offset + node_region->contents_offset];
+	uint32_t* node_data = (uint32_t*) trace->find_mem_contents(node_region);
 	int node_count = static_cast<int>(node_region->size / 4);
 	int leaf_count = (node_count + 1) / 2;
 	int triangles_per_leaf = static_cast<int>(index_region->size / (3 * 4) / leaf_count);
@@ -1182,6 +1193,7 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 struct Workspace {
 	std::unique_ptr<Trace> trace;
 	std::vector<AnalysisSet> analysis;
+	std::vector<Tree> preciseReconstructions;
 	Tree reference;
 	Tree reconstruction;
 	Tree prunedReconstruction;
@@ -1211,10 +1223,12 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->prunedPreciseReconstruction = pruneTree(&ws->preciseReconstruction);
 
 	ws->fullReconstruction = ws->preciseReconstruction;
+	ws->preciseReconstructions.push_back(ws->preciseReconstruction);
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->sa);
 		ws->fullReconstruction = mergeTrees(&ws->fullReconstruction, &partial);
+		ws->preciseReconstructions.push_back(std::move(partial));
 	}
 	ws->fullReconstruction = pruneTree(&ws->fullReconstruction);
 
@@ -1746,9 +1760,8 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	}
 	ImGui::End();
 
-	Trace* trace = app.workspace ? app.workspace->trace.get() : nullptr;
-	app.grid.renderGui(trace, app.selected);
-	app.vis.renderGui(trace);
+	app.grid.renderGui(app.workspace.get(), app.selected);
+	app.vis.renderGui(app.workspace.get(), app.selected);
 
 	if (app.workspace) {
 		AnalysisSet& as = app.workspace->analysis[app.selected.launch_id];

@@ -214,8 +214,10 @@ struct Grid {
 		glBindTexture(GL_TEXTURE_2D, 0);
 	}
 	
-	void renderGui(Trace* trace, Selection& selected) {
+	void renderGui(Workspace* workspace, Selection& selected) {
 		ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+		Trace* trace = workspace ? workspace->trace.get() : nullptr;
 
 		ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
