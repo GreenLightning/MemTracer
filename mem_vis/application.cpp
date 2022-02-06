@@ -1035,6 +1035,13 @@ Tree mergeTrees(Tree* left, Tree* right) {
 			} break;
 
 			case Node::LEAF: {
+				// if (l->leaf_data.face_address != r->leaf_data.face_address) {
+				// 	leaf_conflict++;
+				// 	node.type = Node::UNKNOWN;
+				// } else {
+				// 	node.leaf_data.face_address = l->leaf_data.face_address;
+				// 	node.leaf_data.face_count = l->leaf_data.face_count < r->leaf_data.face_count ? l->leaf_data.face_count : r->leaf_data.face_count;
+				// }
 				if (l->leaf_data.face_address != r->leaf_data.face_address || l->leaf_data.face_count != r->leaf_data.face_count) {
 					leaf_conflict++;
 					node.type = Node::UNKNOWN;
@@ -1106,20 +1113,36 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 		}
 	}
 
-	for (auto& pair : analysis->index_rla.links) {
-		if (pair.second.size() == 1) {
-			auto from_index = pair.first;
-			auto to_index = *pair.second.begin();
+	// Reconstruct leaf nodes.
+	{
+		const int64_t index_count = static_cast<int64_t>(analysis->index_laa.region->object_count);
 
-			Node* node = nodeByIndex[from_index];
-			node->type = Node::LEAF;
+		// startsNewLeaf contains true if another leaf starts at this index.
+		// This is used to prevent overlap between leafes.
+		std::vector<bool> startsNewLeaf;
+		startsNewLeaf.resize(index_count);
 
-			int64_t end_index = to_index + 1;
-			int64_t count = static_cast<int64_t>(analysis->index_laa.region->object_count);
-			while (end_index < count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR)) end_index++;
+		for (auto& pair : analysis->index_rla.links) {
+			if (pair.second.size() == 1) {
+				auto to_index = *pair.second.begin();
+				startsNewLeaf[to_index] = true;
+			}
+		}
 
-			node->leaf_data.face_address = analysis->index_rla.region_b->start + to_index * analysis->index_rla.region_b->object_size;
-			node->leaf_data.face_count = end_index - to_index;
+		for (auto& pair : analysis->index_rla.links) {
+			if (pair.second.size() == 1) {
+				auto from_index = pair.first;
+				auto to_index = *pair.second.begin();
+
+				Node* node = nodeByIndex[from_index];
+				node->type = Node::LEAF;
+
+				int64_t end_index = to_index + 1;
+				while (end_index < index_count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR) && !startsNewLeaf[end_index]) end_index++;
+
+				node->leaf_data.face_address = analysis->index_rla.region_b->start + to_index * analysis->index_rla.region_b->object_size;
+				node->leaf_data.face_count = end_index - to_index;
+			}
 		}
 	}
 
