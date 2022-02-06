@@ -480,7 +480,7 @@ void LinearAccessAnalysis::run(Trace* trace) {
 		if (instr->mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
-			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
+			int64_t access = calculate_index(this->region, ma->addrs[i]);
 			if (access >= 0) {
 				this->flags[access] |= ACCESSED;
 				if (last_access[i] >= 0 && access == last_access[i] + 1) {
@@ -527,7 +527,7 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 		if (instr->mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
-			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
+			int64_t access = calculate_index(this->region, ma->addrs[i]);
 			if (last_access[i] >= 0 && access >= 0) {
 				this->matrix[last_access[i] * this->region->object_count + access]++;
 			}
@@ -608,7 +608,7 @@ void StackAnalysis::run(Trace* trace) {
 		if (instr->mem_region_id != this->region->mem_region_id) continue;
 
 		for (int i = 0; i < 32; i++) {
-			int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region->start) / this->region->object_size;
+			int64_t access = calculate_index(this->region, ma->addrs[i]);
 			if (last_access[i] >= 0 && access >= 0) {
 				this->matrix[last_access[i] * this->region->object_count + access]++;
 			}
@@ -652,11 +652,11 @@ void RegionLinkAnalysis::run(Trace* trace) {
 		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
 		if (instr->mem_region_id == this->region_a->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
-				last_access[i] = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_a->start) / this->region_a->object_size;
+				last_access[i] = calculate_index(this->region_a, ma->addrs[i]);
 			}
 		} else if (instr->mem_region_id == this->region_b->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
-				int64_t access = (ma->addrs[i] == 0) ? -1 : (ma->addrs[i] - this->region_b->start) / this->region_b->object_size;
+				int64_t access = calculate_index(this->region_b, ma->addrs[i]);
 				if (last_access[i] >= 0 && access >= 0) {
 					this->links[last_access[i]].insert(access);
 				}
@@ -1108,7 +1108,7 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 		if (analysis->nodes_laa.flags[index] & LinearAccessAnalysis::ACCESSED) {
 			tree.nodes.push_back(Node{});
 			Node* node = &tree.nodes.back();
-			node->address = analysis->nodes_laa.region->start + index * analysis->nodes_laa.region->object_size;
+			node->address = calculate_address(analysis->nodes_laa.region, index);
 			nodeByIndex[index] = node;
 		}
 	}
@@ -1140,7 +1140,7 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 				int64_t end_index = to_index + 1;
 				while (end_index < index_count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR) && !startsNewLeaf[end_index]) end_index++;
 
-				node->leaf_data.face_address = analysis->index_rla.region_b->start + to_index * analysis->index_rla.region_b->object_size;
+				node->leaf_data.face_address = calculate_address(analysis->index_rla.region_b, to_index);
 				node->leaf_data.face_count = end_index - to_index;
 			}
 		}
