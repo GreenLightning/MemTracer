@@ -322,7 +322,7 @@ public:
 		for (int i = 0; i < header.mem_region_count; i++) {
 			mem_region_t* mem_region = (mem_region_t*) &mmap[header.mem_region_offset + i * header.mem_region_size];
 
-			TraceRegion trace_region;
+			TraceRegion trace_region = {};
 			trace_region.grid_launch_id = mem_region->grid_launch_id;
 			trace_region.mem_region_id = mem_region->mem_region_id;
 			trace_region.start = mem_region->start;
@@ -370,15 +370,21 @@ public:
 };
 
 struct InstructionBasedSizeAnalysis {
-	struct Info {
+	struct InstrInfo {
 		uint64_t instr_index;
 		uint64_t instr_addr;
 		uint64_t mem_region_id;
 		uint64_t estimate;
 	};
 
+	struct RegionInfo {
+		uint64_t mem_region_id;
+		uint64_t min, max;
+	};
+
 	uint64_t grid_launch_id;
-	std::vector<Info> infos;
+	std::vector<InstrInfo> instrInfos;
+	std::vector<RegionInfo> regionInfos;
 
 	void run(Trace* trace);
 	void renderGui(const char* title, bool* open);
@@ -430,13 +436,33 @@ void InstructionBasedSizeAnalysis::run(Trace* trace) {
 	for (int i = 0; i < estimates.size(); i++) {
 		TraceInstruction& instr = trace->instructions[i];
 		if (estimates[i] != 0) {
-			Info info = {};
+			InstrInfo info = {};
 			info.instr_index = instr.index;
 			info.instr_addr = instr.instr_addr;
 			info.mem_region_id = instr.mem_region_id;
 			info.estimate = estimates[i];
-			infos.push_back(info);
+			instrInfos.push_back(info);
 		}
+	}
+
+	for (TraceRegion& region : trace->regions) {
+		uint64_t min = 0, max = 0;
+		for (InstrInfo& info : instrInfos) {
+			if (info.mem_region_id != region.mem_region_id) continue;
+			if (min == 0) {
+				min = info.estimate;
+				max = info.estimate;
+				continue;
+			}
+			if (info.estimate < min) min = info.estimate;
+			if (info.estimate > max) max = info.estimate;
+		}
+		if (min == 0) continue;
+		RegionInfo info = {};
+		info.mem_region_id = region.mem_region_id;
+		info.min = min;
+		info.max = max;
+		regionInfos.push_back(info);
 	}
 }
 
@@ -1436,17 +1462,19 @@ void Trace::renderGuiInWindow() {
 		ImGui::EndTable();
 	}
 
-	if (ImGui::BeginTable("Memory Regions", 5, flags, ImVec2(0.0f, 200.0f))) {
+	if (ImGui::BeginTable("Memory Regions", 7, flags, ImVec2(0.0f, 200.0f))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("Region ID", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
 		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Object Size", ImGuiTableColumnFlags_None);
+		ImGui::TableSetupColumn("Object Count", ImGuiTableColumnFlags_None);
 		ImGui::TableHeadersRow();
 
-		for (uint64_t i = 0; i < this->header.mem_region_count; i++) {
-			mem_region_t* region = (mem_region_t*) &this->mmap[this->header.mem_region_offset + i * this->header.mem_region_size];
+		for (uint64_t i = 0; i < this->regions.size(); i++) {
+			TraceRegion* region = &this->regions[i];
 			if (region->grid_launch_id != app.selected.launch_id) continue;
 			
 			ImGui::TableNextRow();
@@ -1468,6 +1496,10 @@ void Trace::renderGuiInWindow() {
 			ImGui::Text("0x%016lx", region->size);
 			ImGui::TableNextColumn();
 			ImGui::Text("%ld", region->size);
+			ImGui::TableNextColumn();
+			ImGui::Text("%ld", region->object_size);
+			ImGui::TableNextColumn();
+			ImGui::Text("%ld", region->object_count);
 		}
 		ImGui::EndTable();
 	}
@@ -1526,14 +1558,15 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title, bool* open) {
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
 	if (ImGui::Begin(title, open)) {
-		if (ImGui::BeginTable("Estimates", 3, flags)) {
+		float estimatesHeight = max(ImGui::GetContentRegionAvail().y, 500);
+		if (ImGui::BeginTable("Estimates", 3, flags, ImVec2(0.0f, estimatesHeight))) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Inst. Index", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
 			ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
 			ImGui::TableHeadersRow();
 
-			for (auto& info : this->infos) {
+			for (auto& info : this->instrInfos) {
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
 				ImGui::Text("%llu", info.instr_index);
@@ -1541,6 +1574,26 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title, bool* open) {
 				ImGui::Text("%llu", info.mem_region_id);
 				ImGui::TableNextColumn();
 				ImGui::Text("%llu", info.estimate);
+			}
+			ImGui::EndTable();
+		}
+
+		float regionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+		if (ImGui::BeginTable("Regions", 3, flags, ImVec2(0.0f, regionsHeight))) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_None);
+			ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_None);
+			ImGui::TableHeadersRow();
+
+			for (auto& info : this->regionInfos) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", info.mem_region_id);
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", info.min);
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", info.max);
 			}
 			ImGui::EndTable();
 		}
