@@ -3,6 +3,7 @@ struct GridInstruction {
 	std::string opcode;
 	uint64_t    addr;
 	uint64_t    mem_region_id;
+	uint64_t    intra_region_offset;
 	std::string info;
 };
 
@@ -54,6 +55,8 @@ struct Grid {
 			int targetWarpIndex = targetThreadIndex / 32;
 			int targetAccessIndex = targetThreadIndex % 32;
 
+			std::unordered_map<uint64_t, uint64_t> last_addresses;
+
 			for (uint64_t i = trace->begin_index(grid_launch_id), n = trace->end_index(grid_launch_id); i < n; i++) {
 				mem_access_t* ma = &trace->accesses[i];
 				if (ma->block_idx_x != targetBlockX || ma->block_idx_y != targetBlockY || ma->block_idx_z != 0 || ma->local_warp_id != targetWarpIndex || ma->addrs[targetAccessIndex] == 0) continue;
@@ -74,6 +77,10 @@ struct Grid {
 					if (region->grid_launch_id != grid_launch_id) continue;
 					if (region->start <= instr.addr && instr.addr < region->start + region->size) {
 						instr.mem_region_id = region->mem_region_id;
+
+						uint64_t last_address = last_addresses[instr.mem_region_id];
+						if (last_address) instr.intra_region_offset = instr.addr - last_address;
+						last_addresses[instr.mem_region_id] = instr.addr;
 
 						uint64_t offset = instr.addr - region->start;
 						char buffer[256];
@@ -255,7 +262,7 @@ struct Grid {
 			ImGui::Text("Count: %d", this->instructions.size());
 
 			float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-			if (ImGui::BeginTable("Instructions", 6, flags, ImVec2(0.0f, instructionsHeight))) {
+			if (ImGui::BeginTable("Instructions", 7, flags, ImVec2(0.0f, instructionsHeight))) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("IP", ImGuiTableColumnFlags_None);
@@ -263,6 +270,7 @@ struct Grid {
 				ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Info", ImGuiTableColumnFlags_None);
 				ImGui::TableHeadersRow();
 
 				ImGuiListClipper clipper;
@@ -297,6 +305,10 @@ struct Grid {
 						ImGui::TableNextColumn();
 						if (instr.mem_region_id != UINT64_MAX) {
 							ImGui::Text("%d", instr.mem_region_id);
+						}
+						ImGui::TableNextColumn();
+						if (instr.mem_region_id != UINT64_MAX) {
+							ImGui::Text("%d", instr.intra_region_offset);
 						}
 						ImGui::TableNextColumn();
 						ImGui::Text("%s", instr.info.c_str());
