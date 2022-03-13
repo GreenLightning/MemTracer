@@ -424,6 +424,82 @@ void OffsetSizeAnalysis::run(Trace* trace) {
 	}
 }
 
+struct GroupSizeAnalysis {
+	struct RegionInfo {
+		std::map<uint64_t, uint64_t> counts;
+	};
+
+	uint64_t grid_launch_id;
+	std::vector<RegionInfo> regionInfos;
+
+	void run(Trace* trace);
+	void renderGui(const char* title, bool* open);
+};
+
+void GroupSizeAnalysis::run(Trace* trace) {
+	int32_t last_block_idx_z = -1;
+	int32_t last_block_idx_y = -1;
+	int32_t last_block_idx_x = -1;
+	int32_t last_local_warp_id = -1;
+
+	regionInfos.resize(trace->header.mem_region_count);
+
+	struct ThreadInfo {
+		uint64_t last_region_id = UINT64_MAX;
+		uint64_t last_min = 0, last_max = 0;
+	};
+
+	ThreadInfo infos[32] = {};
+
+	for (uint64_t i = trace->begin_index(this->grid_launch_id), n = trace->end_index(this->grid_launch_id); i < n; i++) {
+		mem_access_t* ma = &trace->accesses[i];
+
+		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
+			last_block_idx_z = ma->block_idx_z;
+			last_block_idx_y = ma->block_idx_y;
+			last_block_idx_x = ma->block_idx_x;
+			last_local_warp_id = ma->local_warp_id;
+
+			for (int j = 0; j < 32; j++) {
+				// commit
+				if (infos[j].last_region_id != UINT64_MAX) {
+					regionInfos[infos[j].last_region_id].counts[infos[j].last_max - infos[j].last_min]++;
+				}
+
+				infos[j] = ThreadInfo{};
+			}
+		}
+
+		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
+		if (instr->mem_region_id == UINT64_MAX) continue;
+
+		for (int j = 0; j < 32; j++) {
+			if (ma->addrs[j] != 0) {
+				if (instr->mem_region_id != infos[j].last_region_id) {
+					// commit
+					if (infos[j].last_region_id != UINT64_MAX) {
+						regionInfos[infos[j].last_region_id].counts[infos[j].last_max - infos[j].last_min]++;
+					}
+
+					infos[j].last_region_id = instr->mem_region_id;
+					infos[j].last_min = ma->addrs[j];
+					infos[j].last_max = ma->addrs[j];
+				} else {
+					infos[j].last_min = min(infos[j].last_min, ma->addrs[j]);
+					infos[j].last_max = max(infos[j].last_max, ma->addrs[j]);
+				}
+			}
+		}
+	}
+
+	for (int j = 0; j < 32; j++) {
+		// commit
+		if (infos[j].last_region_id != UINT64_MAX) {
+			regionInfos[infos[j].last_region_id].counts[infos[j].last_max - infos[j].last_min]++;
+		}
+	}
+}
+
 struct InstructionBasedSizeAnalysis {
 	struct InstrInfo {
 		uint64_t instr_index;
@@ -787,6 +863,7 @@ struct CaaDistributionAnalysis {
 
 struct AnalysisSet {
 	OffsetSizeAnalysis osa;
+	GroupSizeAnalysis gsa;
 	InstructionBasedSizeAnalysis ibsa;
 	ConsecutiveAccessAnalysis caa;
 	StackAnalysis sa;
@@ -799,6 +876,9 @@ struct AnalysisSet {
 	void init(Trace* trace, uint64_t grid_launch_id) {
 		osa.grid_launch_id = grid_launch_id;
 		osa.run(trace);
+
+		gsa.grid_launch_id = grid_launch_id;
+		gsa.run(trace);
 
 		ibsa.grid_launch_id = grid_launch_id;
 		ibsa.run(trace);
@@ -1402,7 +1482,8 @@ struct Selection {
 struct Application {
 	int width, height;
 	
-	bool osa = true;
+	bool osa = false;
+	bool gsa = true;
 	bool ibsa = false;
 	bool caa = false;
 	bool sa = false;
@@ -1611,6 +1692,38 @@ void Trace::renderGuiInWindow() {
 }
 
 void OffsetSizeAnalysis::renderGui(const char* title, bool* open) {
+	if (!*open) return;
+
+	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
+
+	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin(title, open)) {
+		int i = 0;
+		for (auto& info : this->regionInfos) {
+			ImGui::Text("Region %d", i++);
+			float regionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+			if (ImGui::BeginTable("Region", 2, flags, ImVec2(0.0f, regionsHeight))) {
+				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
+				ImGui::TableHeadersRow();
+
+				for (auto& pair : info.counts) {
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%lld", pair.first);
+					ImGui::TableNextColumn();
+					ImGui::Text("%llu", pair.second);
+				}
+				ImGui::EndTable();
+			}
+		}
+	}
+	ImGui::End();
+}
+
+void GroupSizeAnalysis::renderGui(const char* title, bool* open) {
 	if (!*open) return;
 
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
@@ -1934,6 +2047,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	if (app.workspace) {
 		AnalysisSet& as = app.workspace->analysis[app.selected.launch_id];
 		as.osa.renderGui("Offset Size Analysis", &app.osa);
+		as.gsa.renderGui("Group Size Analysis", &app.gsa);
 		as.ibsa.renderGui("Instruction Based Size Analysis", &app.ibsa);
 		as.caa.renderGui("Consecutive Access Analysis", &app.caa);
 		as.sa.renderGui("Stack Analysis", &app.sa);
