@@ -3,7 +3,7 @@ struct GridInstruction {
 	std::string opcode;
 	uint64_t    addr;
 	uint64_t    mem_region_id;
-	uint64_t    intra_region_offset;
+	int64_t     intra_region_offset;
 	std::string info;
 };
 
@@ -79,7 +79,7 @@ struct Grid {
 						instr.mem_region_id = region->mem_region_id;
 
 						uint64_t last_address = last_addresses[instr.mem_region_id];
-						if (last_address) instr.intra_region_offset = instr.addr - last_address;
+						if (last_address) instr.intra_region_offset = int64_t(instr.addr - last_address);
 						last_addresses[instr.mem_region_id] = instr.addr;
 
 						uint64_t offset = instr.addr - region->start;
@@ -304,11 +304,11 @@ struct Grid {
 						ImGui::Text("0x%016lx", instr.addr);
 						ImGui::TableNextColumn();
 						if (instr.mem_region_id != UINT64_MAX) {
-							ImGui::Text("%d", instr.mem_region_id);
+							ImGui::Text("%lld", instr.mem_region_id);
 						}
 						ImGui::TableNextColumn();
 						if (instr.mem_region_id != UINT64_MAX) {
-							ImGui::Text("%d", instr.intra_region_offset);
+							ImGui::Text("%lld", instr.intra_region_offset);
 						}
 						ImGui::TableNextColumn();
 						ImGui::Text("%s", instr.info.c_str());
