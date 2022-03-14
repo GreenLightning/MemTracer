@@ -23,6 +23,12 @@
 
 #include "application.hpp"
 
+struct Selection {
+	uint64_t launch_id     = UINT64_MAX;
+	uint64_t instr_addr    = UINT64_MAX;
+	uint64_t mem_region_id = UINT64_MAX;
+};
+
 struct TraceInstructionKey {
 	uint64_t grid_launch_id;
 	uint64_t instr_addr;
@@ -49,6 +55,7 @@ struct TraceInstruction {
 	uint64_t    grid_launch_id;
 	uint64_t    instr_addr;
 	std::string opcode;
+	uint64_t    size;
 	uint64_t    count = 0;
 	uint64_t    min = UINT64_MAX;
 	uint64_t    max = 0;
@@ -276,6 +283,25 @@ public:
 						break;
 					}
 				}
+
+				// Look up size of memory access.
+
+				// Could be queried in mem_trace by using Instr::getSize(), but that function is not documented, duh.
+				// It seems to return the size of the input for conversion functions (F2I.S32.F64 - 8; I2F.F64.S32 - 4),
+				// but should be unambiguous for loads and stores.
+
+				uint64_t instrSize = 4;
+				if (instr.opcode == "STL" || instr.opcode == "LDL" || instr.opcode == "LDG.E") {
+					instr.size = 4;
+				} else if (instr.opcode == "STL.64" || instr.opcode == "LDL.64" || instr.opcode == "LDG.E.64") {
+					instr.size = 8;
+				} else if (instr.opcode == "STL.128" || instr.opcode == "LDL.128") {
+					instr.size = 16;
+				} else if (instr.opcode == "STG.E.U8") {
+					instr.size = 1;
+				} else {
+					instr.size = 0;
+				}
 			}
 			for (int i = 0; i < 32; i++) {
 				uint64_t addr = ma->addrs[i];
@@ -433,7 +459,7 @@ struct GroupSizeAnalysis {
 	std::vector<RegionInfo> regionInfos;
 
 	void run(Trace* trace);
-	void renderGui(const char* title, bool* open);
+	void renderGui(const char* title, bool* open, Selection& selected);
 };
 
 void GroupSizeAnalysis::run(Trace* trace) {
@@ -483,10 +509,10 @@ void GroupSizeAnalysis::run(Trace* trace) {
 
 					infos[j].last_region_id = instr->mem_region_id;
 					infos[j].last_min = ma->addrs[j];
-					infos[j].last_max = ma->addrs[j];
+					infos[j].last_max = ma->addrs[j] + instr->size;
 				} else {
 					infos[j].last_min = min(infos[j].last_min, ma->addrs[j]);
-					infos[j].last_max = max(infos[j].last_max, ma->addrs[j]);
+					infos[j].last_max = max(infos[j].last_max, ma->addrs[j] + instr->size);
 				}
 			}
 		}
@@ -1470,12 +1496,6 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	return ws;
 }
 
-struct Selection {
-	uint64_t launch_id     = UINT64_MAX;
-	uint64_t instr_addr    = UINT64_MAX;
-	uint64_t mem_region_id = UINT64_MAX;
-};
-
 #include "app_grid.cpp"
 #include "app_vis.cpp"
 
@@ -1723,7 +1743,7 @@ void OffsetSizeAnalysis::renderGui(const char* title, bool* open) {
 	ImGui::End();
 }
 
-void GroupSizeAnalysis::renderGui(const char* title, bool* open) {
+void GroupSizeAnalysis::renderGui(const char* title, bool* open, Selection& selected) {
 	if (!*open) return;
 
 	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
@@ -1731,13 +1751,13 @@ void GroupSizeAnalysis::renderGui(const char* title, bool* open) {
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
 	if (ImGui::Begin(title, open)) {
-		int i = 0;
-		for (auto& info : this->regionInfos) {
-			ImGui::Text("Region %d", i++);
-			float regionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-			if (ImGui::BeginTable("Region", 2, flags, ImVec2(0.0f, regionsHeight))) {
+		if (selected.mem_region_id == UINT64_MAX) {
+			ImGui::Text("Select a memory region in the trace window.");
+		} else {
+			RegionInfo& info = this->regionInfos[selected.mem_region_id];
+			if (ImGui::BeginTable("Region", 2, flags)) {
 				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
+				ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_None);
 				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
 				ImGui::TableHeadersRow();
 
@@ -2047,7 +2067,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	if (app.workspace) {
 		AnalysisSet& as = app.workspace->analysis[app.selected.launch_id];
 		as.osa.renderGui("Offset Size Analysis", &app.osa);
-		as.gsa.renderGui("Group Size Analysis", &app.gsa);
+		as.gsa.renderGui("Group Size Analysis", &app.gsa, app.selected);
 		as.ibsa.renderGui("Instruction Based Size Analysis", &app.ibsa);
 		as.caa.renderGui("Consecutive Access Analysis", &app.caa);
 		as.sa.renderGui("Stack Analysis", &app.sa);
