@@ -835,19 +835,25 @@ void RegionLinkAnalysis::run(Trace* trace) {
 		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
 		if (instr->mem_region_id == this->region_a->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
-				last_access[i] = calculate_index(this->region_a, ma->addrs[i]);
+				if (ma->addrs[i] != 0) {
+					last_access[i] = calculate_index(this->region_a, ma->addrs[i]);
+				}
 			}
 		} else if (instr->mem_region_id == this->region_b->mem_region_id) {
 			for (int i = 0; i < 32; i++) {
-				int64_t access = calculate_index(this->region_b, ma->addrs[i]);
-				if (last_access[i] >= 0 && access >= 0) {
-					this->links[last_access[i]].insert(access);
+				if (ma->addrs[i] != 0) {
+					int64_t access = calculate_index(this->region_b, ma->addrs[i]);
+					if (last_access[i] >= 0) {
+						this->links[last_access[i]].insert(access);
+					}
+					last_access[i] = -1;
 				}
-				last_access[i] = -1;
 			}
 		} else if (instr->mem_region_id != UINT64_MAX) {
 			for (int i = 0; i < 32; i++) {
-				last_access[i] = -1;
+				if (ma->addrs[i] != 0) {
+					last_access[i] = -1;
+				}
 			}
 		}
 	}
@@ -961,6 +967,7 @@ struct Node {
 		struct {
 			Node* left;
 			Node* right;
+			uint64_t bounds_address;
 		} parent_data;
 
 		struct {
@@ -1011,6 +1018,7 @@ struct TreeResults {
 	int32_t parents_fully_correct   = 0;
 	int32_t leafs_fully_correct     = 0;
 	int32_t connections_correct     = 0;
+	int32_t bounds_correct          = 0;
 };
 
 TreeResults rateTree(Tree* tree, Tree* reference) {
@@ -1041,6 +1049,9 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 					results.connections_correct += 2;
 				} else if (nl == rl || nl == rr || nr == rl || nr == rr) {
 					results.connections_correct++;
+				}
+				if (node->parent_data.bounds_address == ref->parent_data.bounds_address) {
+					results.bounds_correct++;
 				}
 			}
 			break;
@@ -1123,6 +1134,7 @@ Tree mergeTrees(Tree* left, Tree* right) {
 	int type_conflict = 0;
 	int parent_conflict = 0;
 	int leaf_conflict = 0;
+	int bounds_conflict = 0;
 
 	for (auto& node : dest.nodes) {
 		auto left_it = left_node_by_address.find(node.address);
@@ -1222,6 +1234,17 @@ Tree mergeTrees(Tree* left, Tree* right) {
 					node.parent_data.right = nullptr;
 					if (count > 0) node.parent_data.left = node_by_address[children[0]];
 					if (count > 1) node.parent_data.right = node_by_address[children[1]];
+
+					if (l->parent_data.bounds_address == 0) {
+						node.parent_data.bounds_address = r->parent_data.bounds_address;
+					} else if (r->parent_data.bounds_address == 0) {
+						node.parent_data.bounds_address = l->parent_data.bounds_address;
+					} else if (l->parent_data.bounds_address == r->parent_data.bounds_address) {
+						node.parent_data.bounds_address = l->parent_data.bounds_address;
+					} else {
+						node.parent_data.bounds_address = 0;
+						bounds_conflict++;
+					}
 				}
 			} break;
 
@@ -1247,6 +1270,7 @@ Tree mergeTrees(Tree* left, Tree* right) {
 	printf("type_conflict %d\n", type_conflict);
 	printf("parent_conflict %d\n", parent_conflict);
 	printf("leaf_conflict %d\n", leaf_conflict);
+	printf("bounds_conflict %d\n", bounds_conflict);
 	return dest;
 }
 
@@ -1257,6 +1281,7 @@ Tree buildReferenceTree(Trace* trace) {
 	if (!trace->header.mem_contents_offset) return tree;
 
 	TraceRegion* node_region = trace->find_region(0, 1);
+	TraceRegion* bounds_region = trace->find_region(0, 2);
 	TraceRegion* index_region = trace->find_region(0, 3);
 
 	uint32_t* node_data = (uint32_t*) trace->find_mem_contents(node_region);
@@ -1265,6 +1290,7 @@ Tree buildReferenceTree(Trace* trace) {
 	int triangles_per_leaf = static_cast<int>(index_region->size / (3 * 4) / leaf_count);
 
 	int leaf_index = 0;
+	int parent_index = 0;
 	tree.nodes.resize(node_count);
 	for (int i = 0; i < node_count; i++) {
 		Node* node = &tree.nodes[i];
@@ -1277,12 +1303,14 @@ Tree buildReferenceTree(Trace* trace) {
 		node->address = node_region->start + i * 4;
 
 		if (is_leaf) {
-			node->leaf_data.face_address = index_region->start + leaf_index * triangles_per_leaf * 3 * 4;
+			node->leaf_data.face_address = calculate_address(index_region, leaf_index, triangles_per_leaf * 3 * sizeof(float));
 			node->leaf_data.face_count = payload;
 			leaf_index++;
 		} else {
 			node->parent_data.left = &tree.nodes[i + 1];
 			node->parent_data.right = &tree.nodes[i + payload];
+			node->parent_data.bounds_address = calculate_address(bounds_region, 2 * parent_index, 6 * sizeof(float));
+			parent_index++;
 		}
 	}
 
@@ -1399,6 +1427,14 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 				break;
 			}
 		}
+
+		auto& links = analysis->bounds_rla.links[parent_index];
+		if (links.size() == 1) {
+			auto bounds_index = *links.begin();
+			parent->parent_data.bounds_address = calculate_address(analysis->bounds_rla.region_b, bounds_index);
+		} else {
+			parent->parent_data.bounds_address = 0;
+		}
 	}
 
 	return tree;
@@ -1478,19 +1514,19 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		TreeResults r;
 
 		r = rateTree(&ws->reconstruction, &ws->reference);
-		printf("Reconstructed Nodes: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+		printf("Reconstructed Nodes: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 		
 		r = rateTree(&ws->prunedReconstruction, &ws->reference);
-		printf("Reconstructed Tree:  PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+		printf("Reconstructed Tree:  PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 
 		r = rateTree(&ws->preciseReconstruction, &ws->reference);
-		printf("Precise Nodes:       PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+		printf("Precise Nodes:       PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 		
 		r = rateTree(&ws->prunedPreciseReconstruction, &ws->reference);
-		printf("Precise Tree:        PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+		printf("Precise Tree:        PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 
 		r = rateTree(&ws->fullReconstruction, &ws->reference);
-		printf("Full Tree:           PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+		printf("Full Tree:           PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
 	}
 
 	return ws;
@@ -1503,7 +1539,7 @@ struct Application {
 	int width, height;
 	
 	bool osa = false;
-	bool gsa = true;
+	bool gsa = false;
 	bool ibsa = false;
 	bool caa = false;
 	bool sa = false;
@@ -2011,6 +2047,12 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 	if (ImGui::BeginMainMenuBar()) {
 		if (ImGui::BeginMenu("View")) {
+			if (ImGui::MenuItem("Offset Size Analysis", "", app.osa, true)) {
+				app.osa = !app.osa;
+			}
+			if (ImGui::MenuItem("Group Size Analysis", "", app.gsa, true)) {
+				app.gsa = !app.gsa;
+			}
 			if (ImGui::MenuItem("Instruction Based Size Analysis", "", app.ibsa, true)) {
 				app.ibsa = !app.ibsa;
 			}
