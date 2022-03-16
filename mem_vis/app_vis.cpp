@@ -568,10 +568,10 @@ struct Visualizer {
 					}
 				} break;
 
-				// Current tree.
+				// Current normal tree.
 				case 1: {
 					if (workspace && trace) {
-						Tree* tree = &workspace->preciseReconstructions[launch_id];
+						Tree* tree = &workspace->normalTrees.reconstructions[launch_id];
 						TraceRegion* node_region = trace->find_region(0, 1);
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
@@ -583,10 +583,41 @@ struct Visualizer {
 					}
 				} break;
 
-				// Full tree.	
+
+				// Current precise tree.
 				case 2: {
 					if (workspace && trace) {
-						Tree* tree = &workspace->fullReconstruction;
+						Tree* tree = &workspace->preciseTrees.reconstructions[launch_id];
+						TraceRegion* node_region = trace->find_region(0, 1);
+						for (auto& node : tree->nodes) {
+							int64_t index = calculate_index(node_region, node.address);
+							Box& box = boxes.at(index);
+							box.r = 1.0f;
+							box.g = 1.0f;
+							box.b = 1.0f;
+						}
+					}
+				} break;
+
+				// Full normal tree.
+				case 3: {
+					if (workspace && trace) {
+						Tree* tree = &workspace->normalTrees.fullReconstruction;
+						TraceRegion* node_region = trace->find_region(0, 1);
+						for (auto& node : tree->nodes) {
+							int64_t index = calculate_index(node_region, node.address);
+							Box& box = boxes.at(index);
+							box.r = 1.0f;
+							box.g = 1.0f;
+							box.b = 1.0f;
+						}
+					}
+				} break;
+
+				// Full precise tree.
+				case 4: {
+					if (workspace && trace) {
+						Tree* tree = &workspace->preciseTrees.fullReconstruction;
 						TraceRegion* node_region = trace->find_region(0, 1);
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
@@ -633,7 +664,7 @@ struct Visualizer {
 		if (ImGui::Begin("Visualizer", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 			ImGui::Checkbox("Culling", &culling);
 			ImGui::Checkbox("Model", &model);
-			ImGui::Combo("Mode", &mode, "Currently Accessed\0Current Tree\0Full Tree\0\0");
+			ImGui::Combo("Mode", &mode, "Currently Accessed\0Current Normal Tree\0Current Precise Tree\0Full Normal Tree\0Full Precise Tree\0\0");
 			ImGui::SliderInt("Count", &count, 0, (int) aabbs.size());
 
 			ImVec2 avail = ImGui::GetContentRegionAvail();

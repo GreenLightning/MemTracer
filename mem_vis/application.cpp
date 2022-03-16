@@ -979,6 +979,32 @@ struct Node {
 
 struct Tree {
 	std::vector<Node> nodes;
+
+	// Nodes contain pointers to other nodes in the same tree.
+
+	// To make this work, all constructing functions must make sure that the
+	// pointers are not invalidated by the vector moving the node objects,
+	// e.g. by calling reserve() or allocating all nodes before starting to
+	// assing pointers.
+
+	// Also, we only allow moving tree objects around, but not copying them,
+	// because a simple copy would result in the nodes of the new tree
+	// pointing to nodes in the old tree. If you want to copy a tree,
+	// explicitly use the copyTree() function, which patches the pointers.
+
+	Tree() = default;
+	Tree(const Tree&) = delete;
+	
+	Tree(Tree&& other) {
+		std::swap(this->nodes, other.nodes);
+	}
+	
+	Tree & operator=(const Tree&) = delete;
+
+	Tree& operator=(Tree&& other) {
+		std::swap(this->nodes, other.nodes);
+		return *this;
+	}
 };
 
 struct TreeStats {
@@ -1068,6 +1094,26 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 	}
 
 	return results;
+}
+
+Tree copyTree(Tree& source) {
+	Tree dest;
+	dest.nodes = source.nodes;
+
+	for (auto& node : dest.nodes) {
+		if (node.type == Node::PARENT) {
+			if (node.parent_data.left) {
+				auto index = node.parent_data.left - &source.nodes[0];
+				node.parent_data.left = &dest.nodes[index];
+			}
+			if (node.parent_data.right) {
+				auto index = node.parent_data.right - &source.nodes[0];
+				node.parent_data.right = &dest.nodes[index];
+			}
+		}
+	}
+
+	return dest;
 }
 
 // Rebuilds the tree using only nodes that are reachable from the root node.
@@ -1440,17 +1486,27 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 	return tree;
 }
 
+struct TreeSet {
+	std::vector<Tree> reconstructions;
+	Tree fullNodes;
+	Tree fullReconstruction;
+};
+
 struct Workspace {
 	std::unique_ptr<Trace> trace;
 	std::vector<AnalysisSet> analysis;
-	std::vector<Tree> preciseReconstructions;
 	Tree reference;
-	Tree reconstruction;
-	Tree prunedReconstruction;
-	Tree preciseReconstruction;
-	Tree prunedPreciseReconstruction;
-	Tree fullReconstruction;
+	TreeSet normalTrees;
+	TreeSet preciseTrees;
 };
+
+void printStats(const char* name, TreeStats& ref, TreeStats s) {
+	printf("%20s: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", name, s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
+}
+
+void printResults(const char* name, TreeStats& ref, TreeResults r) {
+	printf("%20s: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", name, r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+}
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto ws = std::make_unique<Workspace>();
@@ -1465,22 +1521,35 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 
 	auto t1 = std::chrono::high_resolution_clock::now();
 
-	AnalysisSet* as = &ws->analysis[0];
 	ws->reference = buildReferenceTree(ws->trace.get());
-	ws->reconstruction = reconstructTree(as, &as->caa);
-	ws->prunedReconstruction = pruneTree(&ws->reconstruction);
-	ws->preciseReconstruction = reconstructTree(as, &as->sa);
-	ws->prunedPreciseReconstruction = pruneTree(&ws->preciseReconstruction);
 
-	ws->fullReconstruction = ws->preciseReconstruction;
-	ws->preciseReconstructions.push_back(ws->preciseReconstruction);
+	AnalysisSet* as = &ws->analysis[0];
+	Tree reconstruction = reconstructTree(as, &as->caa);
+	Tree prunedReconstruction = pruneTree(&reconstruction);
+	Tree preciseReconstruction = reconstructTree(as, &as->sa);
+	Tree prunedPreciseReconstruction = pruneTree(&preciseReconstruction);
+
+	ws->normalTrees.fullReconstruction = reconstructTree(as, &as->caa);
+	ws->normalTrees.reconstructions.push_back(copyTree(ws->normalTrees.fullReconstruction));
+	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
+		AnalysisSet* as = &ws->analysis[i];
+		Tree partial = reconstructTree(as, &as->caa);
+		ws->normalTrees.fullReconstruction = mergeTrees(&ws->normalTrees.fullReconstruction, &partial);
+		ws->normalTrees.reconstructions.push_back(std::move(partial));
+	}
+	ws->normalTrees.fullNodes = copyTree(ws->normalTrees.fullReconstruction);
+	ws->normalTrees.fullReconstruction = pruneTree(&ws->normalTrees.fullReconstruction);
+
+	ws->preciseTrees.fullReconstruction = reconstructTree(as, &as->sa);
+	ws->preciseTrees.reconstructions.push_back(copyTree(ws->preciseTrees.fullReconstruction));
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->sa);
-		ws->fullReconstruction = mergeTrees(&ws->fullReconstruction, &partial);
-		ws->preciseReconstructions.push_back(std::move(partial));
+		ws->preciseTrees.fullReconstruction = mergeTrees(&ws->preciseTrees.fullReconstruction, &partial);
+		ws->preciseTrees.reconstructions.push_back(std::move(partial));
 	}
-	ws->fullReconstruction = pruneTree(&ws->fullReconstruction);
+	ws->preciseTrees.fullNodes = copyTree(ws->preciseTrees.fullReconstruction);
+	ws->preciseTrees.fullReconstruction = pruneTree(&ws->preciseTrees.fullReconstruction);
 
 	auto t2 = std::chrono::high_resolution_clock::now();
 
@@ -1489,44 +1558,26 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 
 	TreeStats ref = countTree(&ws->reference);
 	{
-		TreeStats s;
-		
-		s = countTree(&ws->reference);
-		printf("Reference:           U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
-
-		s = countTree(&ws->reconstruction);
-		printf("Reconstructed Nodes: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
-		
-		s = countTree(&ws->prunedReconstruction);
-		printf("Reconstructed Tree:  U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
-
-		s = countTree(&ws->preciseReconstruction);
-		printf("Precise Nodes:       U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
-		
-		s = countTree(&ws->prunedPreciseReconstruction);
-		printf("Precise Tree:        U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
-
-		s = countTree(&ws->fullReconstruction);
-		printf("Full Tree:           U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
+		printStats("Reference",     ref, countTree(&ws->reference));
+		printStats("Normal Nodes",  ref, countTree(&reconstruction));
+		printStats("Normal Tree",   ref, countTree(&prunedReconstruction));
+		printStats("Precise Nodes", ref, countTree(&preciseReconstruction));
+		printStats("Precise Tree",  ref, countTree(&prunedPreciseReconstruction));
+		printStats("Normal Full",   ref, countTree(&ws->normalTrees.fullNodes));
+		printStats("Precise Full",  ref, countTree(&ws->preciseTrees.fullNodes));
+		printStats("Normal Full",   ref, countTree(&ws->normalTrees.fullReconstruction));
+		printStats("Precise Full",  ref, countTree(&ws->preciseTrees.fullReconstruction));
 	}
 
 	{
-		TreeResults r;
-
-		r = rateTree(&ws->reconstruction, &ws->reference);
-		printf("Reconstructed Nodes: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
-		
-		r = rateTree(&ws->prunedReconstruction, &ws->reference);
-		printf("Reconstructed Tree:  PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
-
-		r = rateTree(&ws->preciseReconstruction, &ws->reference);
-		printf("Precise Nodes:       PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
-		
-		r = rateTree(&ws->prunedPreciseReconstruction, &ws->reference);
-		printf("Precise Tree:        PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
-
-		r = rateTree(&ws->fullReconstruction, &ws->reference);
-		printf("Full Tree:           PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+		printResults("Normal Nodes",  ref, rateTree(&reconstruction, &ws->reference));
+		printResults("Normal Tree",   ref, rateTree(&prunedReconstruction, &ws->reference));
+		printResults("Precise Nodes", ref, rateTree(&preciseReconstruction, &ws->reference));
+		printResults("Precise Tree",  ref, rateTree(&prunedPreciseReconstruction, &ws->reference));
+		printResults("Normal Full",   ref, rateTree(&ws->normalTrees.fullNodes, &ws->reference));
+		printResults("Precise Full",  ref, rateTree(&ws->preciseTrees.fullNodes, &ws->reference));
+		printResults("Normal Full",   ref, rateTree(&ws->normalTrees.fullReconstruction, &ws->reference));
+		printResults("Precise Full",  ref, rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
 	}
 
 	return ws;
