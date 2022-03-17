@@ -965,8 +965,8 @@ struct Node {
 
 	union {
 		struct {
-			Node* left;
-			Node* right;
+			uint64_t left_address;
+			uint64_t right_address;
 			uint64_t bounds_address;
 		} parent_data;
 
@@ -979,32 +979,6 @@ struct Node {
 
 struct Tree {
 	std::vector<Node> nodes;
-
-	// Nodes contain pointers to other nodes in the same tree.
-
-	// To make this work, all constructing functions must make sure that the
-	// pointers are not invalidated by the vector moving the node objects,
-	// e.g. by calling reserve() or allocating all nodes before starting to
-	// assing pointers.
-
-	// Also, we only allow moving tree objects around, but not copying them,
-	// because a simple copy would result in the nodes of the new tree
-	// pointing to nodes in the old tree. If you want to copy a tree,
-	// explicitly use the copyTree() function, which patches the pointers.
-
-	Tree() = default;
-	Tree(const Tree&) = delete;
-	
-	Tree(Tree&& other) {
-		std::swap(this->nodes, other.nodes);
-	}
-	
-	Tree & operator=(const Tree&) = delete;
-
-	Tree& operator=(Tree&& other) {
-		std::swap(this->nodes, other.nodes);
-		return *this;
-	}
 };
 
 struct TreeStats {
@@ -1025,8 +999,8 @@ TreeStats countTree(Tree* tree) {
 
 			case Node::PARENT:
 			stats.parents++;
-			if (node.parent_data.left) stats.connections++;
-			if (node.parent_data.right) stats.connections++;
+			if (node.parent_data.left_address) stats.connections++;
+			if (node.parent_data.right_address) stats.connections++;
 			break;
 
 			case Node::LEAF:
@@ -1066,10 +1040,10 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 			case Node::PARENT:
 			if (ref->type == Node::PARENT) {
 				results.parents_typed_correctly++;
-				uint64_t nl = node->parent_data.left  ? node->parent_data.left ->address : 0;
-				uint64_t nr = node->parent_data.right ? node->parent_data.right->address : 0;
-				uint64_t rl = ref->parent_data.left ->address;
-				uint64_t rr = ref->parent_data.right->address;
+				uint64_t nl = node->parent_data.left_address;
+				uint64_t nr = node->parent_data.right_address;
+				uint64_t rl = ref->parent_data.left_address;
+				uint64_t rr = ref->parent_data.right_address;
 				if ((nl == rl && nr == rr) || (nl == rr && nr == rl)) {
 					results.parents_fully_correct++;
 					results.connections_correct += 2;
@@ -1096,26 +1070,6 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 	return results;
 }
 
-Tree copyTree(Tree& source) {
-	Tree dest;
-	dest.nodes = source.nodes;
-
-	for (auto& node : dest.nodes) {
-		if (node.type == Node::PARENT) {
-			if (node.parent_data.left) {
-				auto index = node.parent_data.left - &source.nodes[0];
-				node.parent_data.left = &dest.nodes[index];
-			}
-			if (node.parent_data.right) {
-				auto index = node.parent_data.right - &source.nodes[0];
-				node.parent_data.right = &dest.nodes[index];
-			}
-		}
-	}
-
-	return dest;
-}
-
 // Rebuilds the tree using only nodes that are reachable from the root node.
 Tree pruneTree(Tree* source) {
 	Tree dest;
@@ -1123,23 +1077,29 @@ Tree pruneTree(Tree* source) {
 
 	if (source->nodes.empty()) return dest;
 
-	// The stack contains double pointers, because the child pointers need to
-	// be patched to point to the new nodes. After the while loop, root
-	// will have been patched to point to the root node of dest.
-	std::vector<Node**> stack;
-	Node* root = &source->nodes[0];
-	stack.push_back(&root);
+	std::unordered_map<uint64_t, Node*> source_node_by_address;
+	for (auto& node : source->nodes) {
+		source_node_by_address[node.address] = &node;
+	}
+
+	std::vector<uint64_t> stack;
+	stack.push_back(source->nodes[0].address);
 	while (!stack.empty()) {
-		Node** p = stack.back();
+		uint64_t address = stack.back();
 		stack.pop_back();
 
-		dest.nodes.push_back(**p);
-		Node* node = &dest.nodes.back();
-		*p = node;
+		auto it = source_node_by_address.find(address);
+		if (it == source_node_by_address.end()) {
+			printf("bad address in pruneTree\n");
+			continue;
+		}
+
+		Node* node = it->second;
+		dest.nodes.push_back(*node);
 
 		if (node->type == Node::PARENT) {
-			if (node->parent_data.left)  stack.push_back(&node->parent_data.left);
-			if (node->parent_data.right) stack.push_back(&node->parent_data.right);
+			if (node->parent_data.left_address)  stack.push_back(node->parent_data.left_address);
+			if (node->parent_data.right_address) stack.push_back(node->parent_data.right_address);
 		}
 	}
 
@@ -1149,31 +1109,31 @@ Tree pruneTree(Tree* source) {
 Tree mergeTrees(Tree* left, Tree* right) {
 	Tree dest;
 
-	// Very bad upper bound.
-	// Can be avoided by building node_by_address after all the nodes have been inserted.
+	// Actual count will be between max(left->nodes.size(), right->nodes.size()) and (left->nodes.size() + right->nodes.size()).
+	// Might be better to not use the upper bound here.
 	dest.nodes.reserve(left->nodes.size() + right->nodes.size());
 
-	std::unordered_map<uint64_t, Node*> node_by_address;
+	std::unordered_set<uint64_t> existing_addresses;
 	std::unordered_map<uint64_t, Node*> left_node_by_address;
 	std::unordered_map<uint64_t, Node*> right_node_by_address;
 
 	for (auto& node : left->nodes) {
 		left_node_by_address[node.address] = &node;
-		if (!node_by_address.count(node.address)) {
+		if (!existing_addresses.count(node.address)) {
 			dest.nodes.push_back(Node{});
 			Node* p = &dest.nodes.back();
 			p->address = node.address;
-			node_by_address[node.address] = p;
+			existing_addresses.insert(node.address);
 		}
 	}
 
 	for (auto& node : right->nodes) {
 		right_node_by_address[node.address] = &node;
-		if (!node_by_address.count(node.address)) {
+		if (!existing_addresses.count(node.address)) {
 			dest.nodes.push_back(Node{});
 			Node* p = &dest.nodes.back();
 			p->address = node.address;
-			node_by_address[node.address] = p;
+			existing_addresses.insert(node.address);
 		}
 	}
 
@@ -1187,14 +1147,6 @@ Tree mergeTrees(Tree* left, Tree* right) {
 		Node* l = left_it == left_node_by_address.end() ? nullptr : left_it->second;
 		auto right_it = right_node_by_address.find(node.address);
 		Node* r = right_it == right_node_by_address.end() ? nullptr : right_it->second;
-
-		defer {
-			// Patch pointers to always point into dest, duh.
-			if (node.type == Node::PARENT) {
-				if (node.parent_data.left) node.parent_data.left = node_by_address[node.parent_data.left->address];
-				if (node.parent_data.right) node.parent_data.right = node_by_address[node.parent_data.right->address];
-			}
-		};
 
 		if (l == nullptr) {
 			node = *r;
@@ -1224,62 +1176,62 @@ Tree mergeTrees(Tree* left, Tree* right) {
 			case Node::PARENT: {
 				uint64_t children[4];
 				int count = 0;
-				if (l->parent_data.left) {
+				if (l->parent_data.left_address) {
 					bool found = false;
 					for (int i = 0; i < count; i++) {
-						if (l->parent_data.left->address == children[i]) {
+						if (l->parent_data.left_address == children[i]) {
 							found = true;
 							break;
 						}
 					}
 					if (!found) {
-						children[count++] = l->parent_data.left->address;
+						children[count++] = l->parent_data.left_address;
 					}
 				}
-				if (l->parent_data.right) {
+				if (l->parent_data.right_address) {
 					bool found = false;
 					for (int i = 0; i < count; i++) {
-						if (l->parent_data.right->address == children[i]) {
+						if (l->parent_data.right_address == children[i]) {
 							found = true;
 							break;
 						}
 					}
 					if (!found) {
-						children[count++] = l->parent_data.right->address;
+						children[count++] = l->parent_data.right_address;
 					}
 				}
-				if (r->parent_data.left) {
+				if (r->parent_data.left_address) {
 					bool found = false;
 					for (int i = 0; i < count; i++) {
-						if (r->parent_data.left->address == children[i]) {
+						if (r->parent_data.left_address == children[i]) {
 							found = true;
 							break;
 						}
 					}
 					if (!found) {
-						children[count++] = r->parent_data.left->address;
+						children[count++] = r->parent_data.left_address;
 					}
 				}
-				if (r->parent_data.right) {
+				if (r->parent_data.right_address) {
 					bool found = false;
 					for (int i = 0; i < count; i++) {
-						if (r->parent_data.right->address == children[i]) {
+						if (r->parent_data.right_address == children[i]) {
 							found = true;
 							break;
 						}
 					}
 					if (!found) {
-						children[count++] = r->parent_data.right->address;
+						children[count++] = r->parent_data.right_address;
 					}
 				}
 				if (count > 2) {
 					node.type = Node::UNKNOWN;
 					parent_conflict++;
 				} else {
-					node.parent_data.left = nullptr;
-					node.parent_data.right = nullptr;
-					if (count > 0) node.parent_data.left = node_by_address[children[0]];
-					if (count > 1) node.parent_data.right = node_by_address[children[1]];
+					node.parent_data.left_address = 0;
+					node.parent_data.right_address = 0;
+					if (count > 0) node.parent_data.left_address = children[0];
+					if (count > 1) node.parent_data.right_address = children[1];
 
 					if (l->parent_data.bounds_address == 0) {
 						node.parent_data.bounds_address = r->parent_data.bounds_address;
@@ -1346,15 +1298,15 @@ Tree buildReferenceTree(Trace* trace) {
 		bool is_leaf = data >> 31;
 
 		node->type = is_leaf ? Node::LEAF : Node::PARENT;
-		node->address = node_region->start + i * 4;
+		node->address = calculate_address(node_region, i, 4);
 
 		if (is_leaf) {
 			node->leaf_data.face_address = calculate_address(index_region, leaf_index, triangles_per_leaf * 3 * sizeof(float));
 			node->leaf_data.face_count = payload;
 			leaf_index++;
 		} else {
-			node->parent_data.left = &tree.nodes[i + 1];
-			node->parent_data.right = &tree.nodes[i + payload];
+			node->parent_data.left_address = calculate_address(node_region, i + 1, 4);
+			node->parent_data.right_address = calculate_address(node_region, i + payload, 4);
 			node->parent_data.bounds_address = calculate_address(bounds_region, 2 * parent_index, 6 * sizeof(float));
 			parent_index++;
 		}
@@ -1461,14 +1413,14 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 		children.resize(size);
 
 		parent->type = Node::PARENT;
-		Node** target = &parent->parent_data.left;
+		uint64_t* target = &parent->parent_data.left_address;
 		for (const auto& pair : children) {
 			Node* child = nodeByIndex[pair.first];
 			if (used.count(child)) continue;
 			used.insert(child);
-			*target = child;
-			if (target == &parent->parent_data.left) {
-				target = &parent->parent_data.right;
+			*target = child->address;
+			if (target == &parent->parent_data.left_address) {
+				target = &parent->parent_data.right_address;
 			} else {
 				break;
 			}
@@ -1530,25 +1482,25 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	Tree prunedPreciseReconstruction = pruneTree(&preciseReconstruction);
 
 	ws->normalTrees.fullReconstruction = reconstructTree(as, &as->caa);
-	ws->normalTrees.reconstructions.push_back(copyTree(ws->normalTrees.fullReconstruction));
+	ws->normalTrees.reconstructions.push_back(ws->normalTrees.fullReconstruction);
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->caa);
 		ws->normalTrees.fullReconstruction = mergeTrees(&ws->normalTrees.fullReconstruction, &partial);
 		ws->normalTrees.reconstructions.push_back(std::move(partial));
 	}
-	ws->normalTrees.fullNodes = copyTree(ws->normalTrees.fullReconstruction);
+	ws->normalTrees.fullNodes = ws->normalTrees.fullReconstruction;
 	ws->normalTrees.fullReconstruction = pruneTree(&ws->normalTrees.fullReconstruction);
 
 	ws->preciseTrees.fullReconstruction = reconstructTree(as, &as->sa);
-	ws->preciseTrees.reconstructions.push_back(copyTree(ws->preciseTrees.fullReconstruction));
+	ws->preciseTrees.reconstructions.push_back(ws->preciseTrees.fullReconstruction);
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->sa);
 		ws->preciseTrees.fullReconstruction = mergeTrees(&ws->preciseTrees.fullReconstruction, &partial);
 		ws->preciseTrees.reconstructions.push_back(std::move(partial));
 	}
-	ws->preciseTrees.fullNodes = copyTree(ws->preciseTrees.fullReconstruction);
+	ws->preciseTrees.fullNodes = ws->preciseTrees.fullReconstruction;
 	ws->preciseTrees.fullReconstruction = pruneTree(&ws->preciseTrees.fullReconstruction);
 
 	auto t2 = std::chrono::high_resolution_clock::now();
