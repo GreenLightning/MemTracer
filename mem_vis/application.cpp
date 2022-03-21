@@ -1172,15 +1172,7 @@ Tree solidifyTree(Tree& source) {
 	});
 
 	for (const auto& pair : totals) {
-		Node& node = dest.nodes[pair.first];;
-
-		uint64_t cutoff = node.parent_data.edges[0].count / 4;
-		for (int i = 1; i < Node::edge_count; i++) {
-			if (node.parent_data.edges[i].address && node.parent_data.edges[i].count < cutoff) {
-				node.parent_data.edges[i].address = 0;
-				node.parent_data.edges[i].count = 0;
-			}
-		}
+		Node& node = dest.nodes[pair.first];
 
 		for (int i = 0; i < Node::edge_count; i++) {
 			uint64_t child_address = node.parent_data.edges[i].address;
