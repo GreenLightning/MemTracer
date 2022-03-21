@@ -1484,11 +1484,17 @@ struct Workspace {
 };
 
 void printStats(const char* name, TreeStats& ref, TreeStats s) {
-	printf("%20s: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", name, s.unknowns, s.parents, s.leafs, s.total, 100.0f * s.total / ref.total, s.connections, 100.0f * s.connections / ref.connections);
+	// Floor percentages to avoid reporting 100% when the actual percentage is very slightly lower.
+	float total_p = floor(100.0f * s.total / ref.total);
+	float connections_p = floor(100.0f * s.connections / ref.connections);
+	printf("%20s: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", name, s.unknowns, s.parents, s.leafs, s.total, total_p, s.connections, connections_p);
 }
 
 void printResults(const char* name, TreeStats& ref, TreeResults r) {
-	printf("%20s: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", name, r.parents_typed_correctly, r.parents_fully_correct, 100.0f * r.parents_fully_correct / ref.parents, r.leafs_typed_correctly, r.leafs_fully_correct, 100.0f * r.leafs_fully_correct / ref.leafs, r.bounds_correct, r.connections_correct, 100.0f * r.connections_correct / ref.connections);
+	float parents_p = floor(100.0f * r.parents_fully_correct / ref.parents);
+	float leafs_p = floor(100.0f * r.leafs_fully_correct / ref.leafs);
+	float connections_p = floor(100.0f * r.connections_correct / ref.connections);
+	printf("%20s: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", name, r.parents_typed_correctly, r.parents_fully_correct, parents_p, r.leafs_typed_correctly, r.leafs_fully_correct, leafs_p, r.bounds_correct, r.connections_correct, connections_p);
 }
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
