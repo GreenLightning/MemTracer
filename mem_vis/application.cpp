@@ -953,7 +953,15 @@ struct AnalysisSet {
 	}
 };
 
+struct NodeEdge {
+	uint64_t address;
+	uint64_t count;
+};
+
+
 struct Node {
+	static constexpr int edge_count = 8;
+
 	enum Type {
 		UNKNOWN,
 		PARENT,
@@ -963,18 +971,15 @@ struct Node {
 	Type type;
 	uint64_t address;
 
-	union {
-		struct {
-			uint64_t left_address;
-			uint64_t right_address;
-			uint64_t bounds_address;
-		} parent_data;
+	struct {
+		NodeEdge edges[edge_count];
+		uint64_t bounds_address;
+	} parent_data;
 
-		struct {
-			uint64_t face_address;
-			uint64_t face_count;
-		} leaf_data;
-	};
+	struct {
+		uint64_t face_address;
+		uint64_t face_count;
+	} leaf_data;
 };
 
 struct Tree {
@@ -999,8 +1004,11 @@ TreeStats countTree(Tree* tree) {
 
 			case Node::PARENT:
 			stats.parents++;
-			if (node.parent_data.left_address) stats.connections++;
-			if (node.parent_data.right_address) stats.connections++;
+			for (int i = 0; i < Node::edge_count; i++) {
+				if (node.parent_data.edges[i].address) {
+					stats.connections++;
+				}
+			}
 			break;
 
 			case Node::LEAF:
@@ -1040,18 +1048,24 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 			case Node::PARENT:
 			if (ref->type == Node::PARENT) {
 				results.parents_typed_correctly++;
-				uint64_t nl = node->parent_data.left_address;
-				uint64_t nr = node->parent_data.right_address;
-				uint64_t rl = ref->parent_data.left_address;
-				uint64_t rr = ref->parent_data.right_address;
+				bool connections_correct = false;
+				bool bounds_correct = false;
+				uint64_t nl = node->parent_data.edges[0].address;
+				uint64_t nr = node->parent_data.edges[1].address;
+				uint64_t rl = ref->parent_data.edges[0].address;
+				uint64_t rr = ref->parent_data.edges[1].address;
 				if ((nl == rl && nr == rr) || (nl == rr && nr == rl)) {
-					results.parents_fully_correct++;
+					connections_correct = true;
 					results.connections_correct += 2;
 				} else if (nl == rl || nl == rr || nr == rl || nr == rr) {
 					results.connections_correct++;
 				}
 				if (node->parent_data.bounds_address == ref->parent_data.bounds_address) {
+					bounds_correct = true;
 					results.bounds_correct++;
+				}
+				if (connections_correct && bounds_correct) {
+					results.parents_fully_correct++;
 				}
 			}
 			break;
@@ -1083,7 +1097,9 @@ Tree pruneTree(Tree* source) {
 	}
 
 	std::vector<uint64_t> stack;
+	std::unordered_set<uint64_t> done;
 	stack.push_back(source->nodes[0].address);
+	done.insert(source->nodes[0].address);
 	while (!stack.empty()) {
 		uint64_t address = stack.back();
 		stack.pop_back();
@@ -1097,15 +1113,121 @@ Tree pruneTree(Tree* source) {
 		Node* node = it->second;
 		dest.nodes.push_back(*node);
 
-		if (node->type == Node::PARENT) {
-			if (node->parent_data.left_address)  stack.push_back(node->parent_data.left_address);
-			if (node->parent_data.right_address) stack.push_back(node->parent_data.right_address);
+		for (int i = 0; i < Node::edge_count; i++) {
+			uint64_t child = node->parent_data.edges[i].address;
+			if (child && !done.count(child)) {
+				stack.push_back(child);
+				done.insert(child);
+			}
 		}
 	}
 
 	return dest;
 }
 
+// Assigns types to nodes, converts to binary tree by removing extra children and cycles.
+Tree solidifyTree(Tree& source) {
+	Tree dest;
+	dest.nodes.reserve(source.nodes.size());
+
+	std::vector<std::pair<uint64_t, uint64_t>> totals; // (parent_index, total_count)
+	for (uint64_t index = 0; index < source.nodes.size(); index++) {
+		Node node = source.nodes[index];
+
+		uint64_t total = 0;
+		for (int i = 0; i < Node::edge_count; i++) {
+			if (node.parent_data.edges[i].address) {
+				total += node.parent_data.edges[i].count;
+			}
+		}
+
+		if (node.leaf_data.face_address) {
+			node.type = Node::LEAF;
+			memset(&node.parent_data, 0, sizeof(node.parent_data));
+		} else if (total) {
+			node.type = Node::PARENT;
+			memset(&node.leaf_data, 0, sizeof(node.leaf_data));
+		} else {
+			node.type = Node::UNKNOWN;
+		}
+
+		if (node.type == Node::PARENT) {
+			totals.emplace_back(index, total);
+		}
+
+		dest.nodes.push_back(node);
+	}
+
+	// Each node may only be used once in the tree construction (i.e. have at
+	// most one parent) to prevent forming a graph.
+	std::unordered_set<uint64_t> used;
+	if (!dest.nodes.empty()) used.insert(dest.nodes[0].address);
+
+
+	// We sort by the total number of accesses, which is a proxy for our
+	// confidence in the relation, to form connections we are more confident of
+	// first.
+	std::sort(totals.begin(), totals.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
+		return a.second > b.second;
+	});
+
+	for (const auto& pair : totals) {
+		Node& node = dest.nodes[pair.first];;
+
+		uint64_t cutoff = node.parent_data.edges[0].count / 4;
+		for (int i = 1; i < Node::edge_count; i++) {
+			if (node.parent_data.edges[i].address && node.parent_data.edges[i].count < cutoff) {
+				node.parent_data.edges[i].address = 0;
+				node.parent_data.edges[i].count = 0;
+			}
+		}
+
+		for (int i = 0; i < Node::edge_count; i++) {
+			uint64_t child_address = node.parent_data.edges[i].address;
+			if (child_address && used.count(child_address)) {
+				// Remove edge while maintaining array order.
+				for (int j = i; j + 1 < Node::edge_count; j++) {
+					node.parent_data.edges[j] = node.parent_data.edges[j+1];
+				}
+				node.parent_data.edges[Node::edge_count-1] = NodeEdge{};
+				i--;
+			}
+		}
+
+		for (int i = 0; i < 2; i++) {
+			if (node.parent_data.edges[i].address) {
+				used.insert(node.parent_data.edges[i].address);
+			}
+		}
+		for (int i = 2; i < Node::edge_count; i++) {
+			node.parent_data.edges[i] = NodeEdge{};
+		}
+	}
+
+	return dest;
+}
+
+void insertEdge(Node* node, NodeEdge edge) {
+	for (int i = 0; i < Node::edge_count; i++) {
+		if (edge.address == node->parent_data.edges[i].address) {
+			node->parent_data.edges[i].count += edge.count;
+			return;
+		}
+	}
+	for (int i = 0; i < Node::edge_count; i++) {
+		NodeEdge other = node->parent_data.edges[i];
+		if (!other.address) {
+			node->parent_data.edges[i] = edge;
+			return;
+		}
+		if (edge.count > other.count) {
+			node->parent_data.edges[i] = edge;
+			edge = other;
+		}
+	}
+}
+
+// Ignores input types; output nodes will have type UNKNOWN.
 Tree mergeTrees(Tree* left, Tree* right) {
 	Tree dest;
 
@@ -1137,10 +1259,8 @@ Tree mergeTrees(Tree* left, Tree* right) {
 		}
 	}
 
-	int type_conflict = 0;
-	int parent_conflict = 0;
-	int leaf_conflict = 0;
 	int bounds_conflict = 0;
+	int leaf_conflict = 0;
 
 	for (auto& node : dest.nodes) {
 		auto left_it = left_node_by_address.find(node.address);
@@ -1149,126 +1269,82 @@ Tree mergeTrees(Tree* left, Tree* right) {
 		Node* r = right_it == right_node_by_address.end() ? nullptr : right_it->second;
 
 		if (l == nullptr) {
-			node = *r;
+			node.parent_data = r->parent_data;
+			node.leaf_data = r->leaf_data;
 			continue;
 		}
 		if (r == nullptr) {
-			node = *l;
+			node.parent_data = l->parent_data;
+			node.leaf_data = l->leaf_data;
 			continue;
 		}
 
-		if (l->type == Node::UNKNOWN) {
-			node = *r;
-			continue;
-		}
-		if (r->type == Node::UNKNOWN) {
-			node = *l;
-			continue;
-		}
-		if (l->type != r->type) {
-			type_conflict++;
-			node.type = Node::UNKNOWN;
-			continue;
+		// Merge parent data.
+		{
+			for (int i = 0; i < Node::edge_count; i++) {
+				NodeEdge edge = l->parent_data.edges[i];
+				if (!edge.address) continue;
+				insertEdge(&node, edge);
+			}
+
+			for (int i = 0; i < Node::edge_count; i++) {
+				NodeEdge edge = r->parent_data.edges[i];
+				if (!edge.address) continue;
+				insertEdge(&node, edge);
+			}
+
+			if (l->parent_data.bounds_address == UINT64_MAX || r->parent_data.bounds_address == UINT64_MAX) {
+				node.parent_data.bounds_address = UINT64_MAX;
+			} else if (l->parent_data.bounds_address == r->parent_data.bounds_address) {
+				node.parent_data.bounds_address = l->parent_data.bounds_address;
+			} else if (r->parent_data.bounds_address == 0) {
+				node.parent_data.bounds_address = l->parent_data.bounds_address;
+			} else if (l->parent_data.bounds_address == 0) {
+				node.parent_data.bounds_address = r->parent_data.bounds_address;
+			} else {
+				node.parent_data.bounds_address = UINT64_MAX;
+				bounds_conflict++;
+			}
 		}
 
-		node.type = l->type;
-		switch (node.type) {
-			case Node::PARENT: {
-				uint64_t children[4];
-				int count = 0;
-				if (l->parent_data.left_address) {
-					bool found = false;
-					for (int i = 0; i < count; i++) {
-						if (l->parent_data.left_address == children[i]) {
-							found = true;
-							break;
-						}
-					}
-					if (!found) {
-						children[count++] = l->parent_data.left_address;
-					}
-				}
-				if (l->parent_data.right_address) {
-					bool found = false;
-					for (int i = 0; i < count; i++) {
-						if (l->parent_data.right_address == children[i]) {
-							found = true;
-							break;
-						}
-					}
-					if (!found) {
-						children[count++] = l->parent_data.right_address;
-					}
-				}
-				if (r->parent_data.left_address) {
-					bool found = false;
-					for (int i = 0; i < count; i++) {
-						if (r->parent_data.left_address == children[i]) {
-							found = true;
-							break;
-						}
-					}
-					if (!found) {
-						children[count++] = r->parent_data.left_address;
-					}
-				}
-				if (r->parent_data.right_address) {
-					bool found = false;
-					for (int i = 0; i < count; i++) {
-						if (r->parent_data.right_address == children[i]) {
-							found = true;
-							break;
-						}
-					}
-					if (!found) {
-						children[count++] = r->parent_data.right_address;
-					}
-				}
-				if (count > 2) {
-					node.type = Node::UNKNOWN;
-					parent_conflict++;
-				} else {
-					node.parent_data.left_address = 0;
-					node.parent_data.right_address = 0;
-					if (count > 0) node.parent_data.left_address = children[0];
-					if (count > 1) node.parent_data.right_address = children[1];
+		// Merge leaf data.
+		{
+			bool conflict = false;
 
-					if (l->parent_data.bounds_address == 0) {
-						node.parent_data.bounds_address = r->parent_data.bounds_address;
-					} else if (r->parent_data.bounds_address == 0) {
-						node.parent_data.bounds_address = l->parent_data.bounds_address;
-					} else if (l->parent_data.bounds_address == r->parent_data.bounds_address) {
-						node.parent_data.bounds_address = l->parent_data.bounds_address;
-					} else {
-						node.parent_data.bounds_address = 0;
-						bounds_conflict++;
-					}
-				}
-			} break;
+			if (l->leaf_data.face_address == UINT64_MAX || r->leaf_data.face_address == UINT64_MAX) {
+				node.leaf_data.face_address = UINT64_MAX;
+			} else if (l->leaf_data.face_address == r->leaf_data.face_address) {
+				node.leaf_data.face_address = l->leaf_data.face_address;
+			} else if (r->leaf_data.face_address == 0) {
+				node.leaf_data.face_address = l->leaf_data.face_address;
+			} else if (l->leaf_data.face_address == 0) {
+				node.leaf_data.face_address = r->leaf_data.face_address;
+			} else {
+				node.leaf_data.face_address = UINT64_MAX;
+				conflict = true;
+			}
 
-			case Node::LEAF: {
-				// if (l->leaf_data.face_address != r->leaf_data.face_address) {
-				// 	leaf_conflict++;
-				// 	node.type = Node::UNKNOWN;
-				// } else {
-				// 	node.leaf_data.face_address = l->leaf_data.face_address;
-				// 	node.leaf_data.face_count = l->leaf_data.face_count < r->leaf_data.face_count ? l->leaf_data.face_count : r->leaf_data.face_count;
-				// }
-				if (l->leaf_data.face_address != r->leaf_data.face_address || l->leaf_data.face_count != r->leaf_data.face_count) {
-					leaf_conflict++;
-					node.type = Node::UNKNOWN;
-				} else {
-					node.leaf_data = l->leaf_data;
-				}
-			} break;
+			if (l->leaf_data.face_count == UINT64_MAX || r->leaf_data.face_count == UINT64_MAX) {
+				node.leaf_data.face_count = UINT64_MAX;
+			} else if (l->leaf_data.face_count == r->leaf_data.face_count) {
+				node.leaf_data.face_count = l->leaf_data.face_count;
+			} else if (r->leaf_data.face_count == 0) {
+				node.leaf_data.face_count = l->leaf_data.face_count;
+			} else if (l->leaf_data.face_count == 0) {
+				node.leaf_data.face_count = r->leaf_data.face_count;
+			} else {
+				node.leaf_data.face_count = UINT64_MAX;
+				conflict = true;
+			}
+
+			if (conflict) {
+				leaf_conflict++;
+			}
 		}
 	}
 
-
-	printf("type_conflict %d\n", type_conflict);
-	printf("parent_conflict %d\n", parent_conflict);
-	printf("leaf_conflict %d\n", leaf_conflict);
 	printf("bounds_conflict %d\n", bounds_conflict);
+	printf("leaf_conflict %d\n", leaf_conflict);
 	return dest;
 }
 
@@ -1305,8 +1381,8 @@ Tree buildReferenceTree(Trace* trace) {
 			node->leaf_data.face_count = payload;
 			leaf_index++;
 		} else {
-			node->parent_data.left_address = calculate_address(node_region, i + 1, 4);
-			node->parent_data.right_address = calculate_address(node_region, i + payload, 4);
+			node->parent_data.edges[0].address = calculate_address(node_region, i + 1, 4);
+			node->parent_data.edges[1].address = calculate_address(node_region, i + payload, 4);
 			node->parent_data.bounds_address = calculate_address(bounds_region, 2 * parent_index, 6 * sizeof(float));
 			parent_index++;
 		}
@@ -1335,7 +1411,7 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 		const int64_t index_count = static_cast<int64_t>(analysis->index_laa.region->object_count);
 
 		// startsNewLeaf contains true if another leaf starts at this index.
-		// This is used to prevent overlap between leafes.
+		// This is used to prevent overlap between leaves.
 		std::vector<bool> startsNewLeaf;
 		startsNewLeaf.resize(index_count);
 
@@ -1348,90 +1424,53 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 
 		for (auto& pair : analysis->index_rla.links) {
 			if (pair.second.size() == 1) {
-				auto from_index = pair.first;
+				auto from_node_index = pair.first;
 				auto to_index = *pair.second.begin();
-
-				Node* node = nodeByIndex[from_index];
-				node->type = Node::LEAF;
 
 				int64_t end_index = to_index + 1;
 				while (end_index < index_count && (analysis->index_laa.flags[end_index] & LinearAccessAnalysis::LINEAR) && !startsNewLeaf[end_index]) end_index++;
 
+				Node* node = nodeByIndex[from_node_index];
 				node->leaf_data.face_address = calculate_address(analysis->index_rla.region_b, to_index);
 				node->leaf_data.face_count = end_index - to_index;
 			}
 		}
 	}
 
-	std::unordered_set<Node*> used;
-	if (!tree.nodes.empty()) used.insert(&tree.nodes[0]);
-
-	// Each node may only be used once in the tree construction (i.e. have at most one parent)
-	// to prevent forming a graph. We sort by the total number of accesses, which is a proxy
-	// for our confidence in the relation, to form connections we are more confident of first.
-
-	std::vector<std::pair<int64_t, uint64_t>> totals; // (parent_index, total)
-	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(node_analysis->region->object_count); parent_index++) {
-		uint64_t total = 0;
-		for (int64_t child_index = 0; child_index < static_cast<int64_t>(node_analysis->region->object_count); child_index++) {
-			total += node_analysis->matrix[parent_index * node_analysis->region->object_count + child_index];
-		}
-		if (total) {
-			totals.emplace_back(parent_index, total);
-		}
-	}
-
-	std::sort(totals.begin(), totals.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
-		return a.second > b.second;
-	});
-
 	std::vector<std::pair<int64_t, uint64_t>> children; // (child_index, count)
-	for (const auto& pair : totals) {
-		int64_t parent_index = pair.first;
-
+	for (int64_t parent_index = 0; parent_index < static_cast<int64_t>(node_analysis->region->object_count); parent_index++) {
 		children.clear();
 
+		uint64_t total = 0;
 		for (int64_t child_index = 0; child_index < static_cast<int64_t>(node_analysis->region->object_count); child_index++) {
 			auto count = node_analysis->matrix[parent_index * node_analysis->region->object_count + child_index];
 			if (count != 0) {
 				children.emplace_back(child_index, count);
+				total += count;
 			}
 		}
 
 		if (children.empty()) continue;
 
-		Node* parent = nodeByIndex[parent_index];
-		if (parent->type != Node::UNKNOWN) continue;
-
+		// Sort children by count.
 		std::sort(children.begin(), children.end(), [] (const std::pair<int64_t, uint64_t>& a, const std::pair<int64_t, uint64_t>& b) {
 			return a.second > b.second;
 		});
 
-		uint64_t cutoff = children[0].second / 4;
-		uint64_t size = 1;
-		while (size < children.size() && children[size].second >= cutoff) size++;
-		children.resize(size);
+		Node* parent = nodeByIndex[parent_index];
 
-		parent->type = Node::PARENT;
-		uint64_t* target = &parent->parent_data.left_address;
-		for (const auto& pair : children) {
+		int edge_index = 0;
+		for (auto pair : children) {
 			Node* child = nodeByIndex[pair.first];
-			if (used.count(child)) continue;
-			used.insert(child);
-			*target = child->address;
-			if (target == &parent->parent_data.left_address) {
-				target = &parent->parent_data.right_address;
-			} else {
-				break;
-			}
+			parent->parent_data.edges[edge_index].address = child->address;
+			parent->parent_data.edges[edge_index].count = pair.second;
+			if (++edge_index >= Node::edge_count) break;
 		}
 
 		auto& links = analysis->bounds_rla.links[parent_index];
 		if (links.size() == 1) {
 			auto bounds_index = *links.begin();
 			parent->parent_data.bounds_address = calculate_address(analysis->bounds_rla.region_b, bounds_index);
-		} else {
-			parent->parent_data.bounds_address = 0;
 		}
 	}
 
@@ -1476,32 +1515,32 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	ws->reference = buildReferenceTree(ws->trace.get());
 
 	AnalysisSet* as = &ws->analysis[0];
-	Tree reconstruction = reconstructTree(as, &as->caa);
+	Tree reconstruction = solidifyTree(reconstructTree(as, &as->caa));
 	Tree prunedReconstruction = pruneTree(&reconstruction);
-	Tree preciseReconstruction = reconstructTree(as, &as->sa);
+	Tree preciseReconstruction = solidifyTree(reconstructTree(as, &as->sa));
 	Tree prunedPreciseReconstruction = pruneTree(&preciseReconstruction);
 
-	ws->normalTrees.fullReconstruction = reconstructTree(as, &as->caa);
-	ws->normalTrees.reconstructions.push_back(ws->normalTrees.fullReconstruction);
+	Tree normalAcc = reconstructTree(as, &as->caa);
+	ws->normalTrees.reconstructions.push_back(solidifyTree(normalAcc));
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->caa);
-		ws->normalTrees.fullReconstruction = mergeTrees(&ws->normalTrees.fullReconstruction, &partial);
-		ws->normalTrees.reconstructions.push_back(std::move(partial));
+		normalAcc = mergeTrees(&normalAcc, &partial);
+		ws->normalTrees.reconstructions.push_back(solidifyTree(partial));
 	}
-	ws->normalTrees.fullNodes = ws->normalTrees.fullReconstruction;
-	ws->normalTrees.fullReconstruction = pruneTree(&ws->normalTrees.fullReconstruction);
+	ws->normalTrees.fullNodes = solidifyTree(normalAcc);
+	ws->normalTrees.fullReconstruction = pruneTree(&ws->normalTrees.fullNodes);
 
-	ws->preciseTrees.fullReconstruction = reconstructTree(as, &as->sa);
-	ws->preciseTrees.reconstructions.push_back(ws->preciseTrees.fullReconstruction);
+	Tree preciseAcc = reconstructTree(as, &as->sa);
+	ws->preciseTrees.reconstructions.push_back(solidifyTree(preciseAcc));
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->sa);
-		ws->preciseTrees.fullReconstruction = mergeTrees(&ws->preciseTrees.fullReconstruction, &partial);
-		ws->preciseTrees.reconstructions.push_back(std::move(partial));
+		preciseAcc = mergeTrees(&preciseAcc, &partial);
+		ws->preciseTrees.reconstructions.push_back(solidifyTree(partial));
 	}
-	ws->preciseTrees.fullNodes = ws->preciseTrees.fullReconstruction;
-	ws->preciseTrees.fullReconstruction = pruneTree(&ws->preciseTrees.fullReconstruction);
+	ws->preciseTrees.fullNodes = solidifyTree(preciseAcc);
+	ws->preciseTrees.fullReconstruction = pruneTree(&ws->preciseTrees.fullNodes);
 
 	auto t2 = std::chrono::high_resolution_clock::now();
 
@@ -1511,14 +1550,16 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	TreeStats ref = countTree(&ws->reference);
 	{
 		printStats("Reference",     ref, countTree(&ws->reference));
+
 		printStats("Normal Nodes",  ref, countTree(&reconstruction));
 		printStats("Normal Tree",   ref, countTree(&prunedReconstruction));
 		printStats("Precise Nodes", ref, countTree(&preciseReconstruction));
 		printStats("Precise Tree",  ref, countTree(&prunedPreciseReconstruction));
-		printStats("Normal Full",   ref, countTree(&ws->normalTrees.fullNodes));
-		printStats("Precise Full",  ref, countTree(&ws->preciseTrees.fullNodes));
-		printStats("Normal Full",   ref, countTree(&ws->normalTrees.fullReconstruction));
-		printStats("Precise Full",  ref, countTree(&ws->preciseTrees.fullReconstruction));
+
+		printStats("Normal Nodes Full",  ref, countTree(&ws->normalTrees.fullNodes));
+		printStats("Normal Tree  Full",  ref, countTree(&ws->normalTrees.fullReconstruction));
+		printStats("Precise Nodes Full", ref, countTree(&ws->preciseTrees.fullNodes));
+		printStats("Precise Tree  Full", ref, countTree(&ws->preciseTrees.fullReconstruction));
 	}
 
 	{
@@ -1526,10 +1567,11 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		printResults("Normal Tree",   ref, rateTree(&prunedReconstruction, &ws->reference));
 		printResults("Precise Nodes", ref, rateTree(&preciseReconstruction, &ws->reference));
 		printResults("Precise Tree",  ref, rateTree(&prunedPreciseReconstruction, &ws->reference));
-		printResults("Normal Full",   ref, rateTree(&ws->normalTrees.fullNodes, &ws->reference));
-		printResults("Precise Full",  ref, rateTree(&ws->preciseTrees.fullNodes, &ws->reference));
-		printResults("Normal Full",   ref, rateTree(&ws->normalTrees.fullReconstruction, &ws->reference));
-		printResults("Precise Full",  ref, rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
+
+		printResults("Normal Nodes Full",   ref, rateTree(&ws->normalTrees.fullNodes, &ws->reference));
+		printResults("Normal Tree  Full",   ref, rateTree(&ws->normalTrees.fullReconstruction, &ws->reference));
+		printResults("Precise Nodes Full",  ref, rateTree(&ws->preciseTrees.fullNodes, &ws->reference));
+		printResults("Precise Tree  Full",  ref, rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
 	}
 
 	return ws;
