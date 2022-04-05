@@ -582,7 +582,8 @@ void InstructionBasedSizeAnalysis::run(Trace* trace) {
 
 		uint64_t* last_addrs = &last_addresses[instr->index * 32];
 		for (int j = 0; j < 32; j++) {
-			if (last_addrs[j] != 0 && ma->addrs[j] != 0) {
+			if (ma->addrs[j] == 0) continue;
+			if (last_addrs[j] != 0) {
 				uint64_t diff = (ma->addrs[j] > last_addrs[j]) ? (ma->addrs[j] - last_addrs[j]) : (last_addrs[j] - ma->addrs[j]);
 				estimates[instr->index] = gcd(estimates[instr->index], diff);
 			}
