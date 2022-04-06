@@ -11,3 +11,5 @@ if(BUILD_MEM_VIS)
 endif()
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/rt)
+
+add_subdirectory(${CMAKE_SOURCE_DIR}/test)
