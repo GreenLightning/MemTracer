@@ -922,7 +922,7 @@ struct AnalysisSet {
 		node_region->object_count = node_region->size / node_region->object_size;
 
 		TraceRegion* bounds_region = trace->find_region(grid_launch_id, 2);
-		bounds_region->object_size = 6 * 4;
+		bounds_region->object_size = 2 * 6 * 4;
 		bounds_region->object_count = bounds_region->size / bounds_region->object_size;
 
 		TraceRegion* index_region = trace->find_region(grid_launch_id, 3);
