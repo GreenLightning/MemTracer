@@ -89,6 +89,7 @@ public:
 	std::string filename;
 	mio::mmap_source mmap;
 	header_t header = {};
+	uint64_t total_individual_access_count = 0;
 	std::vector<std::string> strings;
 	std::vector<TraceInstruction> instructions;
 	std::vector<TraceRegion> regions;
@@ -325,6 +326,7 @@ public:
 		}
 
 		for (auto& pair : instructionsByKey) {
+			total_individual_access_count += pair.second.count;
 			instructions.push_back(pair.second);
 		}
 
@@ -1674,6 +1676,7 @@ void Trace::renderGuiInWindow() {
 	meow_u128 hash;
 	memcpy(&hash, &this->header.hash, 128 / 8);
 	ImGui::Text("Hash: %08X-%08X-%08X-%08X", MeowU32From(hash, 3), MeowU32From(hash, 2), MeowU32From(hash, 1), MeowU32From(hash, 0));
+	ImGui::Text("Total Count: %lld", this->total_individual_access_count);
 
 	float infosHeight = min((this->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200);
 	if (ImGui::BeginTable("Launch Infos", 3, flags, ImVec2(0.0f, infosHeight))) {
