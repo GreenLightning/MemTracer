@@ -125,9 +125,9 @@ void loadConfiguration(Configuration& config, const std::string& path) {
 			auto position = toml::find(light, "position");
 			if (!position.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", position, "here"));
 			if (position.size() != 3) throw std::runtime_error(toml::format_error("[error] position should have three elements", position, "here"));
-			config.light.x = toml::find<float>(position, 0);
-			config.light.y = toml::find<float>(position, 1);
-			config.light.z = toml::find<float>(position, 2);
+			config.light.x = as_float(toml::find(position, 0));
+			config.light.y = as_float(toml::find(position, 1));
+			config.light.z = as_float(toml::find(position, 2));
 		}
 	}
 }
