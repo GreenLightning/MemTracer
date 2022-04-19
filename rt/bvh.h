@@ -79,4 +79,4 @@ struct BVH {
 	BVH(uint32_t maxPrimitives) : maxPrimitives(maxPrimitives) {}
 };
 
-BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, uint32_t maxPrimitives, Heuristic heuristic);
+BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, int32_t maxPrimitives, Heuristic heuristic);

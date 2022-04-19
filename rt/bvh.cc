@@ -23,16 +23,16 @@ enum SplitDescent { NODE_LEFT, NODE_RIGHT };
 
 struct Split {
 	// Range of primitives to be considered for this node.
-	uint32_t offset, count;
+	int32_t offset, count;
 	uint32_t parentIndex;
 	uint32_t level;
 	SplitDescent desc;
 };
 
-BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, uint32_t maxPrimitives, Heuristic heuristic) {
+BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& centers, int32_t maxPrimitives, Heuristic heuristic) {
 	BVH bvh = BVH(maxPrimitives);
 
-	constexpr uint32_t numBins = 256;
+	constexpr int32_t numBins = 256;
 
 	const uint32_t minSplitCount = maxPrimitives + (maxPrimitives & 1) + 2; // used for the cost calculation
 
@@ -46,13 +46,13 @@ BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& center
 	std::vector<uint32_t> localPerms;
 
 	std::vector<Split> splitStack;
-	splitStack.push_back(Split{ 0, static_cast<uint32_t>(aabbs.size()), -1u, 0, NODE_LEFT });
+	splitStack.push_back(Split{ 0, static_cast<int32_t>(aabbs.size()), UINT32_MAX, 0, NODE_LEFT });
 	while (!splitStack.empty()) {
 		Split s = splitStack.back(); splitStack.pop_back();
 		
 		bvh.depth = max(s.level, bvh.depth);
 
-		uint32_t currentNodeIndex = bvh.nodes.size();
+		uint32_t currentNodeIndex = static_cast<uint32_t>(bvh.nodes.size());
 		bvh.nodes.emplace_back(0);
 
 		if (s.desc == NODE_RIGHT) {
@@ -67,12 +67,12 @@ BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& center
 
 			// Copy primitive indices.
 			auto offset = bvh.primitives.size();
-			bvh.primitives.resize(offset + maxPrimitives, -1u);
+			bvh.primitives.resize(offset + maxPrimitives, UINT32_MAX);
 			std::copy(perm.begin() + s.offset, perm.begin() + s.offset + s.count, bvh.primitives.begin() + offset);
 			continue;
 		}
 
-		uint32_t binSize = (s.count + numBins - 1) / numBins;
+		int32_t binSize = (s.count + numBins - 1) / numBins;
 
 		float costs[3 * numBins];
 		localPerms.resize(3 * s.count);
@@ -162,8 +162,8 @@ BVH constructBVH(const std::vector<AABB>& aabbs, const std::vector<vec3>& center
 			perm[s.offset + i] = p[i];
 		}
 
-		uint32_t countLeft = bestSplit;
-		uint32_t countRight = s.count - countLeft;
+		int32_t countLeft = bestSplit;
+		int32_t countRight = s.count - countLeft;
 
 		// Calculate complete AABBs.
 		AABB aabbLeft, aabbRight;
