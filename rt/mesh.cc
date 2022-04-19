@@ -1,8 +1,7 @@
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
-
-#include <happly.h>
 
 #include "mesh.h"
 
@@ -34,27 +33,20 @@ void Mesh::compute_normals() {
 }
 
 Mesh loadMesh(const std::string& name) {
-	Mesh mesh;
+	try {
+		auto index = name.rfind(".");
+		if (index == std::string::npos) throw std::runtime_error("missing file extension");
+		auto extension = name.substr(index+1);
 
-	happly::PLYData data(name);
-
-	auto& vertex = data.getElement("vertex");
-	std::vector<float> x = vertex.getProperty<float>("x");
-	std::vector<float> y = vertex.getProperty<float>("y");
-	std::vector<float> z = vertex.getProperty<float>("z");
-
-	mesh.vertices.reserve(x.size());
-	for (int i = 0; i < x.size(); i++) {
-		mesh.vertices.emplace_back(x[i], y[i], z[i]);
-	}
-
-	std::vector<std::vector<size_t>> indicesList = data.getFaceIndices<size_t>();
-	for (auto& indices : indicesList) {
-		// Perform basic triangulation for faces with more than 3 vertices.
-		for (int i = 1; i + 1 < indices.size(); i++) {
-			mesh.faces.emplace_back(indices[0], indices[i], indices[i+1]);
+		if (extension == "ply") {
+			return loadMeshPly(name);
 		}
-	}
+		if (extension == "obj") {
+			return loadMeshObj(name);
+		}
 
-	return mesh;
+		throw std::runtime_error("unrecognized file extension: " + extension);
+	} catch (const std::runtime_error& e) {
+		throw std::runtime_error("failed to load mesh: " + name + ": " + e.what());
+	}
 }

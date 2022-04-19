@@ -34,3 +34,5 @@ struct Mesh {
 };
 
 Mesh loadMesh(const std::string& name);
+Mesh loadMeshPly(const std::string& name);
+Mesh loadMeshObj(const std::string& name);
