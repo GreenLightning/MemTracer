@@ -462,6 +462,12 @@ void run(Configuration& config) {
 
 	ts.push_back(std::chrono::high_resolution_clock::now());
 
+	std::cout << "Initializing CUDA runtime..." << std::endl;
+	// Dummy call to initialize the runtime to avoid polluting the upload timing.
+	CUDA_CHECK(cudaDeviceSynchronize());
+
+	ts.push_back(std::chrono::high_resolution_clock::now());
+
 	std::cout << "Uploading..." << std::endl;
 	image_b output(config.width, config.height, 3);
 	uint8_t* d_framebuffer = (uint8_t*) my_malloc(output.size());
@@ -512,6 +518,7 @@ void run(Configuration& config) {
 	printf("AABBs:     %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	printf("BVH:       %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	printf("Rearrange: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Cuda init: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	for (int i = 0; i < config.cameras.size(); i++) {
 		printf("Render:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
