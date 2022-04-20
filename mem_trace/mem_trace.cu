@@ -87,6 +87,7 @@ int next_channel_id = 0;
 // Global control variables for this tool.
 uint32_t instr_begin_interval = 0;
 uint32_t instr_end_interval = UINT32_MAX;
+int enable_log = 0;
 int verbose = 0;
 int store_contents = 0;
 std::string filename = "";
@@ -99,6 +100,7 @@ void nvbit_at_init() {
 	GET_VAR_INT(
 		instr_end_interval, "INSTR_END", UINT32_MAX,
 		"End of the instruction interval where to apply instrumentation");
+	GET_VAR_INT(enable_log, "TOOL_LOG", 0, "Log memory accesses to stdout");
 	GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
 	GET_VAR_INT(store_contents, "TOOL_STORE_CONTENTS", 0, "Store memory contents in trace");
 	GET_VAR_STR(filename, "TOOL_FILENAME", "Output filename to write the trace into");
@@ -254,15 +256,17 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 				nvbit_set_at_launch(ctx, p->f, &current_grid_launch_id, sizeof(uint64_t));
 				nvbit_enable_instrumented(ctx, p->f, true);
 
-				printf(
-					"MEMTRACE: CTX 0x%016lx - LAUNCH - Kernel 0x%016lx - Kernel "
-					"name %s - grid launch id %ld - grid size %d,%d,%d - block "
-					"size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
-					(uint64_t)ctx, func_addr, func_name, current_grid_launch_id, p->gridDimX,
-					p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
-					p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes,
-					(uint64_t)p->hStream
-				);
+				if (enable_log || verbose) {
+					printf(
+						"MEMTRACE: CTX 0x%016lx - LAUNCH - Kernel 0x%016lx - Kernel "
+						"name %s - grid launch id %ld - grid size %d,%d,%d - block "
+						"size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
+						(uint64_t)ctx, func_addr, func_name, current_grid_launch_id, p->gridDimX,
+						p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
+						p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes,
+						(uint64_t)p->hStream
+					);
+				}
 
 				launch_info_t info = {};
 				info.grid_launch_id = current_grid_launch_id;
@@ -323,11 +327,7 @@ void* recv_thread_func(void* args) {
 				break;
 			}
 
-			if (file) {
-				ctx_state->header.mem_access_count++;
-				MeowAbsorb(&ctx_state->hash_state, sizeof(mem_access_t), ma);
-				fwrite(ma, sizeof(mem_access_t), 1, file);
-			} else {
+			if (enable_log) {
 				int length = 0;
 				length += sprintf(print_buffer+length, "MEMTRACE: ");
 				length += sprintf(print_buffer+length,
@@ -340,6 +340,11 @@ void* recv_thread_func(void* args) {
 				}
 				length += sprintf(print_buffer+length, "\n");
 				fwrite(print_buffer, length, 1, stdout);
+			}
+			if (file) {
+				ctx_state->header.mem_access_count++;
+				MeowAbsorb(&ctx_state->hash_state, sizeof(mem_access_t), ma);
+				fwrite(ma, sizeof(mem_access_t), 1, file);
 			}
 
 			num_processed_bytes += sizeof(mem_access_t);
