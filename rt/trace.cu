@@ -353,9 +353,10 @@ __global__ void traceKernel(int x, int y, uint8_t* framebuffer, const BVH::Node*
 		color = (1.0f - tc) * vec3(115.0f, 193.0f, 245.0f) / 255.0f + tc * vec3(75.0f, 151.0f, 201.0f) / 255.0f;
 	}
 
-	framebuffer[3 * (y * w + x) + 0] = color.x * 255.0f;
-	framebuffer[3 * (y * w + x) + 1] = color.y * 255.0f;
-	framebuffer[3 * (y * w + x) + 2] = color.z * 255.0f;
+	int64_t x1 = x, y1 = y;
+	framebuffer[3 * (y1 * w + x1) + 0] = color.x * 255.0f;
+	framebuffer[3 * (y1 * w + x1) + 1] = color.y * 255.0f;
+	framebuffer[3 * (y1 * w + x1) + 2] = color.z * 255.0f;
 }
 
 void trace(uint8_t* framebuffer, const BVH::Node* nodes, const AABB* bounds, const Face* faces, const vec3* vertices, const VertexData* vertexData, Camera cam, Light light, uint32_t w, uint32_t h, uint32_t maxPrimitives, bool flat, bool shadows) {
