@@ -909,14 +909,25 @@ struct AnalysisSet {
 	CaaDistributionAnalysis caada;
 
 	void init(Trace* trace, uint64_t grid_launch_id) {
+		std::chrono::high_resolution_clock::time_point t0, t1;
+
+		t0 = std::chrono::high_resolution_clock::now();
 		osa.grid_launch_id = grid_launch_id;
 		osa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "osa", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		gsa.grid_launch_id = grid_launch_id;
 		gsa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "gsa", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		ibsa.grid_launch_id = grid_launch_id;
 		ibsa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "ibsa", std::chrono::duration<double>(t1 - t0).count());
 
 		// Set object sizes.
 		TraceRegion* node_region = trace->find_region(grid_launch_id, 1);
@@ -931,28 +942,49 @@ struct AnalysisSet {
 		index_region->object_size = 3 * 4;
 		index_region->object_count = index_region->size / index_region->object_size;
 
+		t0 = std::chrono::high_resolution_clock::now();
 		caa.region = node_region;
 		caa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "caa", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		sa.region = node_region;
 		sa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "sa", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		index_rla.region_a = node_region;
 		index_rla.region_b = index_region;
 		index_rla.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "index_rla", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		bounds_rla.region_a = node_region;
 		bounds_rla.region_b = bounds_region;
 		bounds_rla.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "bounds_rla", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		nodes_laa.region = node_region;
 		nodes_laa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "nodes_laa", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		index_laa.region = index_region;
 		index_laa.run(trace);
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "index_laa", std::chrono::duration<double>(t1 - t0).count());
 
+		t0 = std::chrono::high_resolution_clock::now();
 		caada.caa = &caa;
 		caada.run();
+		t1 = std::chrono::high_resolution_clock::now();
+		printf("%20s: %0.9fs\n", "caada", std::chrono::duration<double>(t1 - t0).count());
 	}
 };
 
