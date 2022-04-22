@@ -1,10 +1,15 @@
 #include <stdint.h>
 
-struct header_t {
+struct file_header_t {
 	uint32_t magic;
 	uint32_t version;
-	uint64_t header_size;
 
+	// Version 4: file contains: <file_header> <trace_header> <data>; header_size = sizeof(file_header_t) + sizeof(trace_header_t);
+	// Version 5: file contains: <file_header> <data> <trace_header>; header_size = sizeof(trace_header_t);
+	uint64_t header_size;
+};
+
+struct trace_header_t {
 	uint8_t  hash[16];
 
 	uint64_t mem_access_size;

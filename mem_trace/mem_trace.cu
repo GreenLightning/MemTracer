@@ -60,7 +60,7 @@ struct context_state_t {
 
 	FILE* file = nullptr;
 
-	header_t header;
+	trace_header_t header;
 	meow_state hash_state;
 	std::vector<launch_info_t> launch_infos;
 	std::vector<mem_region_t> mem_regions;
@@ -374,7 +374,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 	assert(ctx_state_map.find(ctx) == ctx_state_map.end());
 	ctx_state_map[ctx] = ctx_state;
 
-	memset(&ctx_state->header, 0, sizeof(header_t));
+	memset(&ctx_state->header, 0, sizeof(trace_header_t));
 	memset(&ctx_state->hash_state, 0, sizeof(meow_state));
 
 	// TODO: If there are multiple contexts, they will all attempt to write to the same file.
@@ -387,14 +387,15 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 
 		MeowBegin(&ctx_state->hash_state, MeowDefaultSeed);
 
-		// Write blank header as placeholder.
-		// The header is added to the hash at the end.
-		fwrite(&ctx_state->header, sizeof(header_t), 1, ctx_state->file);
+		// Write file header.
+		file_header_t file_header = {};
+		file_header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
+		file_header.version = 5;
+		file_header.header_size = sizeof(trace_header_t);
+		MeowAbsorb(&ctx_state->hash_state, sizeof(file_header_t), &file_header);
+		fwrite(&file_header, sizeof(file_header_t), 1, ctx_state->file);
 
-		// Fill in static header values.
-		ctx_state->header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
-		ctx_state->header.version = 4;
-		ctx_state->header.header_size = sizeof(header_t);
+		// Fill in static trace header values.
 		ctx_state->header.mem_access_size = sizeof(mem_access_t);
 		ctx_state->header.launch_info_size = sizeof(launch_info_t);
 		ctx_state->header.mem_region_size = sizeof(mem_region_t);
@@ -474,13 +475,12 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 			}
 		}
 
-		MeowAbsorb(&ctx_state->hash_state, sizeof(header_t), &ctx_state->header);
+		MeowAbsorb(&ctx_state->hash_state, sizeof(trace_header_t), &ctx_state->header);
 
 		meow_u128 hash = MeowEnd(&ctx_state->hash_state, nullptr);
 		memcpy(&ctx_state->header.hash, &hash, 128 / 8);
 
-		fseek(ctx_state->file, 0, SEEK_SET);
-		fwrite(&ctx_state->header, sizeof(header_t), 1, ctx_state->file);
+		fwrite(&ctx_state->header, sizeof(trace_header_t), 1, ctx_state->file);
 
 		int error = fclose(ctx_state->file);
 		if (error) {

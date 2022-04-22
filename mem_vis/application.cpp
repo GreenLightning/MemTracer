@@ -88,7 +88,8 @@ class Trace {
 public:
 	std::string filename;
 	mio::mmap_source mmap;
-	header_t header = {};
+	file_header_t file_header = {};
+	trace_header_t header = {};
 	uint64_t total_individual_access_count = 0;
 	std::vector<std::string> strings;
 	std::vector<TraceInstruction> instructions;
@@ -146,23 +147,41 @@ public:
 		if (mmap.size() == 0) return "empty file";
 		if (mmap.size() < 32) return "file too short";
 
-		memcpy(&header, mmap.data(), 32);
+		memcpy(&file_header, mmap.data(), sizeof(file_header_t));
 
-		if (header.magic != (('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24))) {
+		if (file_header.magic != (('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24))) {
 			return "invalid file (magic)";
 		}
 
-		if (header.version != 4) {
+		if (file_header.version < 4 || file_header.version > 5) {
 			char buffer[256];
-			snprintf(buffer, sizeof(buffer), "file version (%d) is not supported", header.version);
+			snprintf(buffer, sizeof(buffer), "file version (%d) is not supported", file_header.version);
 			return buffer;
 		}
 
-		if (header.header_size < 120 || header.header_size > sizeof(header_t)) {
-			return "invalid file (header size)";
-		}
+		uint64_t mmap_data_begin = 0, mmap_data_end = 0;
 
-		memcpy(&header, mmap.data(), header.header_size);
+		if (file_header.version == 4) {
+
+			if (file_header.header_size < 120 || file_header.header_size > 160) {
+				return "invalid file (header size)";
+			}
+
+			memcpy(&header, &mmap[sizeof(file_header_t)], file_header.header_size - sizeof(file_header_t));
+
+			mmap_data_begin = file_header.header_size;
+			mmap_data_end = mmap.size();
+
+		} else {
+			if (file_header.header_size < 144 || file_header.header_size > sizeof(trace_header_t)) {
+				return "invalid file (header size)";
+			}
+
+			memcpy(&header, &mmap[mmap.size() - file_header.header_size], file_header.header_size);
+
+			mmap_data_begin = sizeof(file_header_t);
+			mmap_data_end = mmap.size() - file_header.header_size;
+		}
 
 		auto t1 = std::chrono::high_resolution_clock::now();
 
@@ -175,8 +194,14 @@ public:
 
 		meow_state hashState;
 		MeowBegin(&hashState, MeowDefaultSeed);
-		MeowAbsorb(&hashState, mmap.size() - header.header_size, &mmap[header.header_size]);
-		MeowAbsorb(&hashState, header.header_size, &header);
+		if (file_header.version == 4) {
+			MeowAbsorb(&hashState, mmap.size() - file_header.header_size, &mmap[file_header.header_size]);
+			MeowAbsorb(&hashState, sizeof(file_header_t), &file_header);
+			MeowAbsorb(&hashState, file_header.header_size - sizeof(file_header_t), &header);
+		} else {
+			MeowAbsorb(&hashState, mmap.size() - file_header.header_size, &mmap[0]);
+			MeowAbsorb(&hashState, file_header.header_size, &header);
+		}
 		meow_u128 actualHash = MeowEnd(&hashState, nullptr);
 
 		// Restore hash.
@@ -185,14 +210,16 @@ public:
 		int match = MeowHashesAreEqual(actualHash, expectedHash);
 		if (!match) return "invalid file (hash)";
 
-		if (header.strings_offset < header.header_size ||
-			header.strings_offset >= mmap.size() ||
+		if (header.strings_offset < mmap_data_begin ||
+			header.strings_offset >= mmap_data_end ||
 			header.strings_size >= mmap.size() ||
-			header.strings_offset + header.strings_size > mmap.size() ||
+			header.strings_offset + header.strings_size > mmap_data_end ||
 			(header.strings_size != 0 && mmap[header.strings_offset + header.strings_size - 1] != 0)
-			) return "invalid file (strings section)";
+			) {
+			return "invalid file (strings section)";
+		}
 
-			uint64_t string_start = header.strings_offset;
+		uint64_t string_start = header.strings_offset;
 		for (uint64_t i = 0; i < header.strings_size; i++) {
 			if (mmap[header.strings_offset + i] == 0) {
 				strings.push_back(std::string(&mmap[string_start], &mmap[header.strings_offset + i]));

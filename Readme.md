@@ -40,5 +40,5 @@ Command line options are:
 
 ```
 ./rt/rt -config ../workspace/data/config.toml -output test.png
-TOOL_FILENAME=trace.bin LD_PRELOAD=./mem_trace/libmem_trace.so ./rt/rt -config ../workspace/data/config.toml -output test.png
+TOOL_FILENAME=trace.bin TOOL_STORE_CONTENTS=1 LD_PRELOAD=./mem_trace/libmem_trace.so ./rt/rt -config ../workspace/data/config.toml -output test.png
 ```
