@@ -2093,6 +2093,13 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	}
 
 	if (ImGui::BeginMainMenuBar()) {
+		if (ImGui::BeginMenu("Trace")) {
+			if (ImGui::MenuItem("Close")) {
+				app.workspace = nullptr;
+			}
+			ImGui::EndMenu();
+		}
+
 		if (ImGui::BeginMenu("View")) {
 			if (ImGui::MenuItem("Offset Size Analysis", "", app.osa, true)) {
 				app.osa = !app.osa;
