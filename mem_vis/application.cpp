@@ -689,6 +689,14 @@ public:
 		this->data.resize(count);
 	}
 
+	std::unordered_map<uint64_t, uint64_t>::iterator begin(uint64_t a) {
+		return this->data[a].begin();
+	}
+
+	std::unordered_map<uint64_t, uint64_t>::iterator end(uint64_t a) {
+		return this->data[a].end();
+	}
+
 	uint64_t get(uint64_t a, uint64_t b) {
 		auto& map = this->data[a];
 		auto it = map.find(b);
@@ -1450,12 +1458,9 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 		children.clear();
 
 		uint64_t total = 0;
-		for (int64_t child_index = 0; child_index < static_cast<int64_t>(node_analysis->region->object_count); child_index++) {
-			auto count = node_analysis->matrix.get(parent_index, child_index);
-			if (count != 0) {
-				children.emplace_back(child_index, count);
-				total += count;
-			}
+		for (auto it = node_analysis->matrix.begin(parent_index), end = node_analysis->matrix.end(parent_index); it != end; it++) {
+			children.emplace_back(it->first, it->second);
+			total += it->second;
 		}
 
 		if (children.empty()) continue;
