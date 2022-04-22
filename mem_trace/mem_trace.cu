@@ -59,6 +59,8 @@ struct context_state_t {
 	std::vector<mem_region_t> active_mem_regions;
 
 	FILE* file = nullptr;
+	uint64_t file_pos = 0;
+	bool is_gzip_stream = false;
 
 	trace_header_t header;
 	meow_state hash_state;
@@ -301,6 +303,12 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 	pthread_mutex_unlock(&mutex);
 }
 
+void write_data(context_state_t* ctx_state, void* data, size_t size) {
+	MeowAbsorb(&ctx_state->hash_state, size, data);
+	fwrite(data, size, 1, ctx_state->file);
+	ctx_state->file_pos += size;
+}
+
 void* recv_thread_func(void* args) {
 	CUcontext ctx = (CUcontext)args;
 
@@ -343,8 +351,7 @@ void* recv_thread_func(void* args) {
 			}
 			if (file) {
 				ctx_state->header.mem_access_count++;
-				MeowAbsorb(&ctx_state->hash_state, sizeof(mem_access_t), ma);
-				fwrite(ma, sizeof(mem_access_t), 1, file);
+				write_data(ctx_state, ma, sizeof(mem_access_t));
 			}
 
 			num_processed_bytes += sizeof(mem_access_t);
@@ -379,7 +386,18 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 
 	// TODO: If there are multiple contexts, they will all attempt to write to the same file.
 	if (!filename.empty()) {
-		ctx_state->file = fopen(filename.c_str(), "wb");
+		std::string extension;
+		auto index = filename.rfind(".");
+		if (index != std::string::npos) extension = filename.substr(index);
+		ctx_state->is_gzip_stream = (extension == ".gz");
+
+		if (ctx_state->is_gzip_stream) {
+			std::string cmd = "gzip > " + filename;
+			ctx_state->file = popen(cmd.c_str(), "w");
+		} else {
+			ctx_state->file = fopen(filename.c_str(), "wb");
+		}
+
 		if (!ctx_state->file) {
 			fprintf(stderr, "Failed to create output file\n");
 			exit(1);
@@ -392,8 +410,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 		file_header.magic = ('T' << 0) | ('R' << 8) | ('A' << 16) | ('C' << 24);
 		file_header.version = 5;
 		file_header.header_size = sizeof(trace_header_t);
-		MeowAbsorb(&ctx_state->hash_state, sizeof(file_header_t), &file_header);
-		fwrite(&file_header, sizeof(file_header_t), 1, ctx_state->file);
+		write_data(ctx_state, &file_header, sizeof(file_header_t));
 
 		// Fill in static trace header values.
 		ctx_state->header.mem_access_size = sizeof(mem_access_t);
@@ -402,7 +419,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
 		ctx_state->header.addr_info_size = sizeof(addr_info_t);
 
 		// Start memory access area.
-		ctx_state->header.mem_access_offset = ftell(ctx_state->file);
+		ctx_state->header.mem_access_offset = ctx_state->file_pos;
 	}
 
 	SEM_CHECK(sem_init(&ctx_state->recv_done, 0, 0));
@@ -435,43 +452,38 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 		std::vector<std::string> strings;
 
 		ctx_state->header.launch_info_count = ctx_state->launch_infos.size();
-		ctx_state->header.launch_info_offset = ftell(ctx_state->file);
-		MeowAbsorb(&ctx_state->hash_state, sizeof(launch_info_t) * ctx_state->launch_infos.size(), ctx_state->launch_infos.data());
-		fwrite(ctx_state->launch_infos.data(), sizeof(launch_info_t), ctx_state->launch_infos.size(), ctx_state->file);
+		ctx_state->header.launch_info_offset = ctx_state->file_pos;
+		write_data(ctx_state, ctx_state->launch_infos.data(), ctx_state->launch_infos.size() * sizeof(launch_info_t));
 
 		ctx_state->header.mem_region_count = ctx_state->mem_regions.size();
-		ctx_state->header.mem_region_offset = ftell(ctx_state->file);
-		MeowAbsorb(&ctx_state->hash_state, sizeof(mem_region_t) * ctx_state->mem_regions.size(), ctx_state->mem_regions.data());
-		fwrite(ctx_state->mem_regions.data(), sizeof(mem_region_t), ctx_state->mem_regions.size(), ctx_state->file);
+		ctx_state->header.mem_region_offset = ctx_state->file_pos;
+		write_data(ctx_state, ctx_state->mem_regions.data(), sizeof(mem_region_t) * ctx_state->mem_regions.size());
 
 		ctx_state->header.addr_info_count = addr_to_opcode_map.size();
-		ctx_state->header.addr_info_offset = ftell(ctx_state->file);
+		ctx_state->header.addr_info_offset = ctx_state->file_pos;
 		for (auto address_and_opcode : addr_to_opcode_map) {
 			addr_info_t info = {};
 			info.addr = address_and_opcode.first;
 			info.opcode_string_index = static_cast<int32_t>(strings.size());
 			strings.push_back(address_and_opcode.second);
-			MeowAbsorb(&ctx_state->hash_state, sizeof(addr_info_t), &info);
-			fwrite(&info, sizeof(addr_info_t), 1, ctx_state->file);
+			write_data(ctx_state, &info, sizeof(addr_info_t));
 		}
 
-		uint64_t strings_offset = ftell(ctx_state->file);
+		uint64_t strings_offset = ctx_state->file_pos;
 		for (auto& s : strings) {
-			MeowAbsorb(&ctx_state->hash_state, s.size()+1, (void*) s.c_str());
-			fwrite(s.c_str(), s.size()+1, 1, ctx_state->file);
+			write_data(ctx_state, (void*) s.c_str(), s.size() + 1);
 		}
 		ctx_state->header.strings_offset = strings_offset;
-		ctx_state->header.strings_size   = ftell(ctx_state->file) - strings_offset;
+		ctx_state->header.strings_size   = ctx_state->file_pos - strings_offset;
 
 		if (store_contents) {
 			// Confusing, but correct. The offset on the state is local to this section,
 			// its final value is the total size. The offset on the header describes
 			// the offset in the file.
-			ctx_state->header.mem_contents_offset = ftell(ctx_state->file);
+			ctx_state->header.mem_contents_offset = ctx_state->file_pos;
 			ctx_state->header.mem_contents_size = ctx_state->mem_contents_offset;
 			for (auto& contents : ctx_state->mem_contents) {
-				MeowAbsorb(&ctx_state->hash_state, contents.size(), (void*) contents.data());
-				fwrite(contents.data(), contents.size(), 1, ctx_state->file);
+				write_data(ctx_state, contents.data(), contents.size());
 			}
 		}
 
@@ -482,7 +494,12 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 
 		fwrite(&ctx_state->header, sizeof(trace_header_t), 1, ctx_state->file);
 
-		int error = fclose(ctx_state->file);
+		int error;
+		if (ctx_state->is_gzip_stream) {
+			error = pclose(ctx_state->file);
+		} else {
+			error = fclose(ctx_state->file);
+		}
 		if (error) {
 			fprintf(stderr, "Failed to write output file\n");
 			exit(1);
