@@ -678,9 +678,31 @@ void LinearAccessAnalysis::run(Trace* trace) {
 	}
 }
 
+class Matrix {
+private:
+	uint64_t count;
+	std::vector<std::unordered_map<uint64_t, uint64_t>> data;
+
+public:
+	void init(uint64_t count) {
+		this->count = count;
+		this->data.resize(count);
+	}
+
+	uint64_t get(uint64_t a, uint64_t b) {
+		auto& map = this->data[a];
+		auto it = map.find(b);
+		return (it == map.end()) ? 0 : it->second;
+	}
+
+	void increment(uint64_t a, uint64_t b) {
+		this->data[a][b]++;
+	}
+};
+
 struct ConsecutiveAccessAnalysis {
 	TraceRegion* region;
-	std::vector<uint64_t> matrix;
+	Matrix matrix;
 
 	void run(Trace* trace);
 	void renderGui(const char* title, bool* open);
@@ -693,7 +715,7 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 	int32_t last_local_warp_id = -1;
 	int64_t last_access[32];
 
-	matrix.resize(this->region->object_count * this->region->object_count);
+	matrix.init(this->region->object_count);
 
 	for (uint64_t i = trace->begin_index(this->region->grid_launch_id), n = trace->end_index(this->region->grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
@@ -715,7 +737,7 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 		for (int i = 0; i < 32; i++) {
 			int64_t access = calculate_index(this->region, ma->addrs[i]);
 			if (last_access[i] >= 0 && access >= 0) {
-				this->matrix[last_access[i] * this->region->object_count + access]++;
+				this->matrix.increment(last_access[i], access);
 			}
 			last_access[i] = access;
 		}
@@ -724,7 +746,7 @@ void ConsecutiveAccessAnalysis::run(Trace* trace) {
 
 struct StackAnalysis {
 	TraceRegion* region;
-	std::vector<uint64_t> matrix;
+	Matrix matrix;
 
 	void run(Trace* trace);
 	void renderGui(const char* title, bool* open);
@@ -739,7 +761,7 @@ void StackAnalysis::run(Trace* trace) {
 	int64_t last_access[32];
 	std::unordered_map<uint64_t, int64_t> stack_maps[32];
 
-	matrix.resize(this->region->object_count * this->region->object_count);
+	matrix.init(this->region->object_count);
 
 	for (uint64_t i = trace->begin_index(this->region->grid_launch_id), n = trace->end_index(this->region->grid_launch_id); i < n; i++) {
 		mem_access_t* ma = &trace->accesses[i];
@@ -796,7 +818,7 @@ void StackAnalysis::run(Trace* trace) {
 		for (int i = 0; i < 32; i++) {
 			int64_t access = calculate_index(this->region, ma->addrs[i]);
 			if (last_access[i] >= 0 && access >= 0) {
-				this->matrix[last_access[i] * this->region->object_count + access]++;
+				this->matrix.increment(last_access[i], access);
 			}
 			last_access[i] = access;
 		}
@@ -1429,7 +1451,7 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 
 		uint64_t total = 0;
 		for (int64_t child_index = 0; child_index < static_cast<int64_t>(node_analysis->region->object_count); child_index++) {
-			auto count = node_analysis->matrix[parent_index * node_analysis->region->object_count + child_index];
+			auto count = node_analysis->matrix.get(parent_index, child_index);
 			if (count != 0) {
 				children.emplace_back(child_index, count);
 				total += count;
@@ -1957,7 +1979,7 @@ void ConsecutiveAccessAnalysis::renderGui(const char* title, bool* open) {
 			ImGui::TableHeadersRow();
 
 			for (int i = 0; i < this->region->object_count; i++) {
-				auto count = this->matrix[index * this->region->object_count + i];
+				auto count = this->matrix.get(index, i);
 				if (count != 0) {
 					ImGui::TableNextRow();
 					ImGui::TableNextColumn();
@@ -1992,7 +2014,7 @@ void StackAnalysis::renderGui(const char* title, bool* open) {
 			ImGui::TableHeadersRow();
 
 			for (int i = 0; i < this->region->object_count; i++) {
-				auto count = this->matrix[index * this->region->object_count + i];
+				auto count = this->matrix.get(index, i);
 				if (count != 0) {
 					ImGui::TableNextRow();
 					ImGui::TableNextColumn();
