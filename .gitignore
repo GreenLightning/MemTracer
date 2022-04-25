@@ -1,6 +1,7 @@
 /build
 /core
 /data
+/results
 
 .DS_Store
 *.sublime-workspace

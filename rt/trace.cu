@@ -406,9 +406,50 @@ void my_synchronize() {
 	#endif
 }
 
+#ifdef __CUDACC__
+	typedef cudaEvent_t event_t;
+#else
+	typedef void* event_t;
+#endif
+
+void my_event_create(event_t* event) {
+	#ifdef __CUDACC__
+		CUDA_CHECK(cudaEventCreate(event));
+	#endif
+}
+
+void my_event_destroy(event_t event) {
+	#ifdef __CUDACC__
+		CUDA_CHECK(cudaEventDestroy(event));
+	#endif	
+}
+
+void my_event_record(event_t event) {
+	#ifdef __CUDACC__
+		CUDA_CHECK(cudaEventRecord(event));
+	#endif
+}
+
+double my_event_elapsed_time_seconds(event_t start, event_t stop) {
+	#ifdef __CUDACC__
+		float millis = 0.0f;
+		CUDA_CHECK(cudaEventElapsedTime(&millis, start, stop));
+		return static_cast<double>(millis) / 1000.0;
+	#else
+		return 0.0;
+	#endif
+}
+
 void run(Configuration& config) {
 	std::vector<std::chrono::high_resolution_clock::time_point> ts;
 	ts.reserve(200);
+
+	std::vector<double> gpu_timings;
+	gpu_timings.reserve(16);
+
+	event_t start, stop;
+	my_event_create(&start);
+	my_event_create(&stop);
 
 	ts.push_back(std::chrono::high_resolution_clock::now());
 
@@ -492,8 +533,14 @@ void run(Configuration& config) {
 
 	for (int i = 0; i < config.cameras.size(); i++) {
 		std::cout << "Rendering..." << std::endl;
+
+		my_event_record(start);
 		trace(d_framebuffer, d_nodes, d_bounds, d_faces, d_vertices, d_vertexData, config.cameras[i], config.light, config.width, config.height, bvh.maxPrimitives, config.shading == FLAT, config.shadows);
+		my_event_record(stop);
 		my_synchronize();
+		
+		double gpu_time = my_event_elapsed_time_seconds(start, stop);
+		gpu_timings.push_back(gpu_time);
 
 		ts.push_back(std::chrono::high_resolution_clock::now());
 
@@ -515,22 +562,26 @@ void run(Configuration& config) {
 	}
 
 	int tj = 0;
-	printf("Mesh:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("AABBs:     %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("BVH:       %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("Rearrange: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("Cuda init: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-	printf("Upload:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Mesh:       %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("AABBs:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("BVH:        %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Rearrange:  %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Cuda init:  %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+	printf("Upload:     %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 	for (int i = 0; i < config.cameras.size(); i++) {
-		printf("Render:    %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
-		printf("Download:  %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+		printf("Render GPU: %0.9fs\n", gpu_timings[i]);
+		printf("Render CPU: %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
+		printf("Download:   %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count()); tj++;
 		if (!config.output.empty()) {
-			printf("Save:      %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count());
+			printf("Save:       %0.9fs\n", std::chrono::duration<double>(ts[tj+1] - ts[tj]).count());
 		}
 		tj++;
 	}
 
 	fflush(stdout);
+
+	my_event_destroy(start);
+	my_event_destroy(stop);
 }
 
 int main(int argc, const char** argv) {
