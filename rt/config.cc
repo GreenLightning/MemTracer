@@ -1,6 +1,60 @@
+#include <cmath>
+
 #include "toml.hpp"
 
 #include "config.h"
+
+struct mat3 {
+	float data[9];
+
+	float& operator[](int index) {
+		return data[index];
+	}
+};
+
+mat3 matrix_rotate_x(float theta) {
+	float s = sin(theta);
+	float c = cos(theta);
+	return {
+		1, 0, 0,
+		0, c, -s,
+		0, s, c,
+	};
+}
+
+mat3 matrix_rotate_y(float theta) {
+	float s = sin(theta);
+	float c = cos(theta);
+	return {
+		c, 0, s,
+		0, 1, 0,
+		-s, 0, c,
+	};
+}
+
+mat3 matrix_rotate_z(float theta) {
+	float s = sin(theta);
+	float c = cos(theta);
+	return {
+		c, -s, 0,
+		s, c, 0,
+		0, 0, 1,
+	};
+}
+
+mat3 matrix_multiply(mat3 a, mat3 b) {
+	mat3 result;
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 3; j++) {
+			float v = 0.0f;
+			for (int k = 0; k < 3; k++) {
+				v += a[3*i+k] * b[3*k+j];
+			}
+			result[3*i+j] = v;
+		}
+	}
+	return result;
+}
 
 float as_float(const toml::value& value) {
 	if (value.is_integer()) return static_cast<float>(value.as_integer(std::nothrow));
@@ -17,6 +71,22 @@ Camera loadCamera(const toml::value& camera) {
 		cam.x = as_float(toml::find(position, 0));
 		cam.y = as_float(toml::find(position, 1));
 		cam.z = as_float(toml::find(position, 2));
+	}
+
+	if (camera.contains("rotation")) {
+		auto rotation = toml::find(camera, "rotation");
+		if (!rotation.is_array()) throw std::runtime_error(toml::format_error("[error] expected array", rotation, "here"));
+		if (rotation.size() != 3) throw std::runtime_error(toml::format_error("[error] rotation should have three elements", rotation, "here"));
+		float x = static_cast<float>(as_float(toml::find(rotation, 0)) * M_PI / 180.0f);
+		float y = static_cast<float>(as_float(toml::find(rotation, 1)) * M_PI / 180.0f);
+		float z = static_cast<float>(as_float(toml::find(rotation, 2)) * M_PI / 180.0f);
+
+		mat3 mx = matrix_rotate_x(x);
+		mat3 my = matrix_rotate_y(y);
+		mat3 mz = matrix_rotate_z(z);
+
+		mat3 result = matrix_multiply(mz, matrix_multiply(my, mx));
+		for (int i = 0; i < 9; i++) cam.mat[i] = result[i];
 	}
 
 	if (camera.contains("matrix")) {

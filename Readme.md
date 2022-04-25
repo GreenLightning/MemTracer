@@ -29,6 +29,17 @@ size = [256, 256]
 
 [camera]
 position = [-0.0160, 0.1079, 0.2]
+
+# euler rotation angles in degrees
+rotation = [10, 20, 30]
+
+# alternatively, rotation matrix
+matrix = [
+	1, 0, 0,
+	0, 1, 0,
+	0, 0, 1,
+]
+
 vertical_fov = 60
 ```
 
