@@ -424,61 +424,6 @@ public:
 	}
 };
 
-struct OffsetSizeAnalysis {
-	struct RegionInfo {
-		std::map<int64_t, uint64_t> counts;
-	};
-
-	uint64_t grid_launch_id;
-	std::vector<RegionInfo> regionInfos;
-
-	void run(Trace* trace);
-	void renderGui(const char* title, bool* open);
-};
-
-void OffsetSizeAnalysis::run(Trace* trace) {
-	int32_t last_block_idx_z = -1;
-	int32_t last_block_idx_y = -1;
-	int32_t last_block_idx_x = -1;
-	int32_t last_local_warp_id = -1;
-
-	regionInfos.resize(trace->header.mem_region_count);
-
-	std::vector<uint64_t> last_addresses;
-	last_addresses.resize(trace->header.mem_region_count * 32);
-
-	for (uint64_t i = trace->begin_index(this->grid_launch_id), n = trace->end_index(this->grid_launch_id); i < n; i++) {
-		mem_access_t* ma = &trace->accesses[i];
-
-		if (ma->block_idx_z != last_block_idx_z || ma->block_idx_y != last_block_idx_y || ma->block_idx_x != last_block_idx_x || ma->local_warp_id != last_local_warp_id) {
-			last_block_idx_z = ma->block_idx_z;
-			last_block_idx_y = ma->block_idx_y;
-			last_block_idx_x = ma->block_idx_x;
-			last_local_warp_id = ma->local_warp_id;
-
-			for (int j = 0; j < last_addresses.size(); j++) {
-				last_addresses[j] = 0;
-			}
-		}
-
-		TraceInstruction* instr = trace->find_instr(ma->grid_launch_id, ma->instr_addr);
-		if (instr->mem_region_id == UINT64_MAX) continue;
-
-		RegionInfo* info = &regionInfos[instr->mem_region_id];
-
-		uint64_t* last_addrs = &last_addresses[instr->mem_region_id * 32];
-		for (int j = 0; j < 32; j++) {
-			if (ma->addrs[j] != 0) {
-				if (last_addrs[j]) {
-					int64_t offset = static_cast<int64_t>(ma->addrs[j] - last_addrs[j]);
-					info->counts[offset]++;
-				}
-				last_addrs[j] = ma->addrs[j];
-			}
-		}
-	}
-}
-
 struct GroupSizeAnalysis {
 	struct RegionInfo {
 		std::map<uint64_t, uint64_t> counts;
@@ -920,9 +865,9 @@ void RegionLinkAnalysis::run(Trace* trace) {
 }
 
 struct AnalysisSet {
-	OffsetSizeAnalysis osa;
 	GroupSizeAnalysis gsa;
 	InstructionBasedSizeAnalysis ibsa;
+
 	ConsecutiveAccessAnalysis caa;
 	StackAnalysis sa;
 	RegionLinkAnalysis index_rla;
@@ -932,12 +877,6 @@ struct AnalysisSet {
 
 	void init(Trace* trace, uint64_t grid_launch_id) {
 		std::chrono::high_resolution_clock::time_point t0, t1;
-
-		t0 = std::chrono::high_resolution_clock::now();
-		osa.grid_launch_id = grid_launch_id;
-		osa.run(trace);
-		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "osa", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		gsa.grid_launch_id = grid_launch_id;
@@ -1629,7 +1568,6 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 struct Application {
 	int width, height;
 	
-	bool osa = false;
 	bool gsa = false;
 	bool ibsa = false;
 	bool caa = false;
@@ -1836,38 +1774,6 @@ void Trace::renderGuiInWindow() {
 		}
 		ImGui::EndTable();
 	}
-}
-
-void OffsetSizeAnalysis::renderGui(const char* title, bool* open) {
-	if (!*open) return;
-
-	ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
-
-	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
-
-	if (ImGui::Begin(title, open)) {
-		int i = 0;
-		for (auto& info : this->regionInfos) {
-			ImGui::Text("Region %d", i++);
-			float regionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
-			if (ImGui::BeginTable("Region", 2, flags, ImVec2(0.0f, regionsHeight))) {
-				ImGui::TableSetupScrollFreeze(0, 1);
-				ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_None);
-				ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_None);
-				ImGui::TableHeadersRow();
-
-				for (auto& pair : info.counts) {
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Text("%lld", pair.first);
-					ImGui::TableNextColumn();
-					ImGui::Text("%llu", pair.second);
-				}
-				ImGui::EndTable();
-			}
-		}
-	}
-	ImGui::End();
 }
 
 void GroupSizeAnalysis::renderGui(const char* title, bool* open, Selection& selected) {
@@ -2131,9 +2037,6 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		}
 
 		if (ImGui::BeginMenu("View")) {
-			if (ImGui::MenuItem("Offset Size Analysis", "", app.osa, true)) {
-				app.osa = !app.osa;
-			}
 			if (ImGui::MenuItem("Group Size Analysis", "", app.gsa, true)) {
 				app.gsa = !app.gsa;
 			}
@@ -2189,7 +2092,6 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 	if (app.workspace) {
 		AnalysisSet& as = app.workspace->analysis[app.selected.launch_id];
-		as.osa.renderGui("Offset Size Analysis", &app.osa);
 		as.gsa.renderGui("Group Size Analysis", &app.gsa, app.selected);
 		as.ibsa.renderGui("Instruction Based Size Analysis", &app.ibsa);
 		as.caa.renderGui("Consecutive Access Analysis", &app.caa);
