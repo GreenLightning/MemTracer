@@ -1565,6 +1565,11 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 #include "app_grid.cpp"
 #include "app_vis.cpp"
 
+struct Arguments {
+	bool batch = false;
+	std::string filename;
+};
+
 struct Application {
 	int width, height;
 	
@@ -1586,19 +1591,53 @@ struct Application {
 };
 
 namespace {
+	Arguments args;
 	Application app;
 }
 
-void appInitialize(GLFWwindow* window, int argc, char* argv[]) {
-	if (argc > 2) {
-		fprintf(stderr, "too many arguments\n");
-		fprintf(stderr, "usage: <trace-filename>\n");
-		exit(1);
+void appParseArguments(int argc, char* argv[]) {
+	for (int i = 1; i < argc; i++) {
+		std::string arg = argv[i];
+
+		if (arg == "-batch") {
+			args.batch = true;
+			continue;
+		}
+
+		if (arg.size() != 0 && arg[0] == '-') {
+			fprintf(stderr, "unknown argument: '%s'\n", arg.c_str());
+			exit(1);
+		}
+
+		if (args.filename != "") {
+			fprintf(stderr, "too many arguments\n");
+			exit(1);
+		}
+
+		args.filename = arg;
 	}
 
-	if (argc == 2) {
+	if (args.batch) {
+		if (args.filename == "") exit(0);
+
 		auto trace = std::make_unique<Trace>();
-		std::string error = trace->load(argv[1]);
+		std::string error = trace->load(args.filename);
+		if (!error.empty()) {
+			fprintf(stderr, "failed to load %s: %s\n", trace->filename.c_str(), error.c_str());
+			exit(1);
+		}
+
+		auto workspace = buildWorkspace(std::move(trace));
+
+		printf("total individual accesses: %lld\n", workspace->trace->total_individual_access_count);
+		exit(0);
+	}
+}
+
+void appInitialize(GLFWwindow* window) {
+	if (args.filename != "") {
+		auto trace = std::make_unique<Trace>();
+		std::string error = trace->load(args.filename);
 		if (!error.empty()) {
 			fprintf(stderr, "failed to load %s: %s\n", trace->filename.c_str(), error.c_str());
 			exit(1);

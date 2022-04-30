@@ -68,6 +68,8 @@ void windowCursorPositionCallback(GLFWwindow* window, double xpos, double ypos) 
 }
 
 int main(int argc, char* argv[]) {
+	appParseArguments(argc, argv);
+
 	glfwInit();
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -118,7 +120,7 @@ int main(int argc, char* argv[]) {
 	ImGui_ImplGlfw_InitForOpenGL(window, true);
 	ImGui_ImplOpenGL3_Init("#version 120");
 
-	appInitialize(window, argc, argv);
+	appInitialize(window);
 	appSetSize(window, framebufferWidth, framebufferHeight);
 
 	glfwFocusWindow(window);

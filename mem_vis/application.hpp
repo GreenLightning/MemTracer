@@ -5,7 +5,8 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
-void appInitialize(GLFWwindow* window, int argc, char* argv[]);
+void appParseArguments(int argc, char* argv[]);
+void appInitialize(GLFWwindow* window);
 void appTerminate(GLFWwindow* window);
 
 // event callbacks
