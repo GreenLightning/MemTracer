@@ -447,10 +447,6 @@ void run(Configuration& config) {
 	std::vector<double> gpu_timings;
 	gpu_timings.reserve(16);
 
-	event_t start, stop;
-	my_event_create(&start);
-	my_event_create(&stop);
-
 	ts.push_back(std::chrono::high_resolution_clock::now());
 
 	std::cout << "Loading mesh..." << std::endl;
@@ -507,6 +503,10 @@ void run(Configuration& config) {
 	std::cout << "Initializing CUDA runtime..." << std::endl;
 	// Dummy call to initialize the runtime to avoid polluting the upload timing.
 	CUDA_CHECK(cudaDeviceSynchronize());
+
+	event_t start, stop;
+	my_event_create(&start);
+	my_event_create(&stop);
 
 	ts.push_back(std::chrono::high_resolution_clock::now());
 
