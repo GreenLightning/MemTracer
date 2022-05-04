@@ -979,7 +979,7 @@ struct Tree {
 struct TreeStats {
 	int32_t unknowns    = 0;
 	int32_t parents     = 0;
-	int32_t leafs       = 0;
+	int32_t leaves      = 0;
 	int32_t total       = 0;
 	int32_t connections = 0;
 };
@@ -1002,19 +1002,19 @@ TreeStats countTree(Tree* tree) {
 			break;
 
 			case Node::LEAF:
-			stats.leafs++;
+			stats.leaves++;
 			break;
 		}
 	}
-	stats.total = stats.unknowns + stats.parents + stats.leafs;
+	stats.total = stats.unknowns + stats.parents + stats.leaves;
 	return stats;
 }
 
 struct TreeResults {
 	int32_t parents_typed_correctly = 0;
-	int32_t leafs_typed_correctly   = 0;
+	int32_t leaves_typed_correctly   = 0;
 	int32_t parents_fully_correct   = 0;
-	int32_t leafs_fully_correct     = 0;
+	int32_t leaves_fully_correct     = 0;
 	int32_t connections_correct     = 0;
 	int32_t bounds_correct          = 0;
 };
@@ -1062,9 +1062,9 @@ TreeResults rateTree(Tree* tree, Tree* reference) {
 
 			case Node::LEAF:
 			if (ref->type == Node::LEAF) {
-				results.leafs_typed_correctly++;
+				results.leaves_typed_correctly++;
 				if (node->leaf_data.face_address == ref->leaf_data.face_address && node->leaf_data.face_count == ref->leaf_data.face_count) {
-					results.leafs_fully_correct++;
+					results.leaves_fully_correct++;
 				}
 			}
 			break;
@@ -1474,14 +1474,22 @@ void printStats(const char* name, TreeStats& ref, TreeStats s) {
 	// Floor percentages to avoid reporting 100% when the actual percentage is very slightly lower.
 	float total_p = floor(100.0f * s.total / ref.total);
 	float connections_p = floor(100.0f * s.connections / ref.connections);
-	printf("%20s: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", name, s.unknowns, s.parents, s.leafs, s.total, total_p, s.connections, connections_p);
+	printf("%20s: U%05d P%05d L%05d T%05d=%3.0f%% C%05d=%3.0f%%\n", name, s.unknowns, s.parents, s.leaves, s.total, total_p, s.connections, connections_p);
 }
 
 void printResults(const char* name, TreeStats& ref, TreeResults r) {
 	float parents_p = floor(100.0f * r.parents_fully_correct / ref.parents);
-	float leafs_p = floor(100.0f * r.leafs_fully_correct / ref.leafs);
+	float leaves_p = floor(100.0f * r.leaves_fully_correct / ref.leaves);
 	float connections_p = floor(100.0f * r.connections_correct / ref.connections);
-	printf("%20s: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", name, r.parents_typed_correctly, r.parents_fully_correct, parents_p, r.leafs_typed_correctly, r.leafs_fully_correct, leafs_p, r.bounds_correct, r.connections_correct, connections_p);
+	printf("%20s: PT%05d P+%05d=%3.0f%% LT%05d L+%05d=%3.0f%% B%05d C%05d=%3.0f%%\n", name, r.parents_typed_correctly, r.parents_fully_correct, parents_p, r.leaves_typed_correctly, r.leaves_fully_correct, leaves_p, r.bounds_correct, r.connections_correct, connections_p);
+}
+
+void printTable(const char* name, TreeStats& ref, TreeStats s, TreeResults r) {
+	float parents_p = floor(1000.0f * r.parents_fully_correct / ref.parents) / 10.0f;
+	float leaves_p = floor(1000.0f * r.leaves_fully_correct / ref.leaves) / 10.0f;
+	auto total_c = r.parents_fully_correct + r.leaves_fully_correct;
+	float total_p = floor(1000.0f * total_c / ref.total) / 10.0f;
+	printf("%20s & %05d & %5.1f\\%% & %05d & %5.1f\\%% & %05d & %5.1f\\%% \\\\\n", name, r.parents_fully_correct, parents_p, r.leaves_fully_correct, leaves_p, total_c, total_p);
 }
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
@@ -1533,8 +1541,26 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	printf("reconstruction: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
 
 	TreeStats ref = countTree(&ws->reference);
-	{
-		printStats("Reference",     ref, countTree(&ws->reference));
+
+	TreeStats accessed = {};
+	for (uint64_t i = 0; i < ws->reference.nodes.size(); i++) {
+		for (uint64_t j = 0; j < ws->trace->header.launch_info_count; j++) {
+			LinearAccessAnalysis* laa = &ws->analysis[j].nodes_laa;
+			if (laa->flags[i]) {
+				if (ws->reference.nodes[i].type == Node::LEAF) {
+					accessed.leaves++;
+				} else {
+					accessed.parents++;
+				}
+				break;
+			}
+		}
+	}
+	accessed.total = accessed.parents + accessed.leaves;
+
+	if (false) {
+		printStats("Reference", ref, ref);
+		printStats("Accessed",  ref, accessed);
 
 		printStats("Normal Nodes",  ref, countTree(&reconstruction));
 		printStats("Normal Tree",   ref, countTree(&prunedReconstruction));
@@ -1545,9 +1571,7 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		printStats("Normal Tree  Full",  ref, countTree(&ws->normalTrees.fullReconstruction));
 		printStats("Precise Nodes Full", ref, countTree(&ws->preciseTrees.fullNodes));
 		printStats("Precise Tree  Full", ref, countTree(&ws->preciseTrees.fullReconstruction));
-	}
 
-	{
 		printResults("Normal Nodes",  ref, rateTree(&reconstruction, &ws->reference));
 		printResults("Normal Tree",   ref, rateTree(&prunedReconstruction, &ws->reference));
 		printResults("Precise Nodes", ref, rateTree(&preciseReconstruction, &ws->reference));
@@ -1557,6 +1581,16 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		printResults("Normal Tree  Full",   ref, rateTree(&ws->normalTrees.fullReconstruction, &ws->reference));
 		printResults("Precise Nodes Full",  ref, rateTree(&ws->preciseTrees.fullNodes, &ws->reference));
 		printResults("Precise Tree  Full",  ref, rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
+	} else {
+		float parents_p = floor(1000.0f * accessed.parents / ref.parents) / 10.0f;
+		float leaves_p = floor(1000.0f * accessed.leaves / ref.leaves) / 10.0f;
+		float total_p = floor(1000.0f * accessed.total / ref.total) / 10.0f;
+		printf("%20s & %05d & %5.1f\\%% & %05d & %5.1f\\%% & %05d & %5.1f\\%% \\\\\n", "", ref.parents, 100.0f, ref.leaves, 100.0f, ref.total, 100.0f);
+		printf("%20s & %05d & %5.1f\\%% & %05d & %5.1f\\%% & %05d & %5.1f\\%% \\\\\n", "Accessed", accessed.parents, parents_p, accessed.leaves, leaves_p, accessed.total, total_p);
+
+		printTable("SA", ref, countTree(&ws->preciseTrees.fullReconstruction), rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
+		printTable("CAA",  ref, countTree(&ws->normalTrees.fullNodes), rateTree(&ws->normalTrees.fullNodes, &ws->reference));
+		printTable("CAA (pruned)",  ref, countTree(&ws->normalTrees.fullReconstruction), rateTree(&ws->normalTrees.fullReconstruction, &ws->reference));
 	}
 
 	return ws;
