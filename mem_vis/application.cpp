@@ -23,6 +23,23 @@
 
 #include "application.hpp"
 
+enum ResultsMode {
+	ResultsModeNone,
+	ResultsModeUser,
+	ResultsModeTable,
+};
+
+struct Arguments {
+	bool batch  = false;
+	bool timing = false;
+	ResultsMode resultsMode = ResultsModeNone;
+	std::string filename;
+};
+
+namespace {
+	Arguments args;
+}
+
 struct Selection {
 	uint64_t launch_id     = UINT64_MAX;
 	uint64_t instr_addr    = UINT64_MAX;
@@ -414,11 +431,13 @@ public:
 
 		auto t5 = std::chrono::high_resolution_clock::now();
 
-		printf("init:         %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
-		printf("validate:     %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
-		printf("instructions: %.9fs\n", std::chrono::duration<double>(t3 - t2).count());
-		printf("regions:      %.9fs\n", std::chrono::duration<double>(t4 - t3).count());
-		printf("copy:         %.9fs\n", std::chrono::duration<double>(t5 - t4).count());
+		if (args.timing) {
+			printf("init:         %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
+			printf("validate:     %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+			printf("instructions: %.9fs\n", std::chrono::duration<double>(t3 - t2).count());
+			printf("regions:      %.9fs\n", std::chrono::duration<double>(t4 - t3).count());
+			printf("copy:         %.9fs\n", std::chrono::duration<double>(t5 - t4).count());
+		}
 
 		return "";
 	}
@@ -882,13 +901,13 @@ struct AnalysisSet {
 		gsa.grid_launch_id = grid_launch_id;
 		gsa.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "gsa", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "gsa", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		ibsa.grid_launch_id = grid_launch_id;
 		ibsa.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "ibsa", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "ibsa", std::chrono::duration<double>(t1 - t0).count());
 
 		// Set object sizes.
 		TraceRegion* node_region = trace->find_region(grid_launch_id, 1);
@@ -907,39 +926,39 @@ struct AnalysisSet {
 		caa.region = node_region;
 		caa.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "caa", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "caa", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		sa.region = node_region;
 		sa.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "sa", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "sa", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		index_rla.region_a = node_region;
 		index_rla.region_b = index_region;
 		index_rla.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "index_rla", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "index_rla", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		bounds_rla.region_a = node_region;
 		bounds_rla.region_b = bounds_region;
 		bounds_rla.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "bounds_rla", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "bounds_rla", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		nodes_laa.region = node_region;
 		nodes_laa.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "nodes_laa", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "nodes_laa", std::chrono::duration<double>(t1 - t0).count());
 
 		t0 = std::chrono::high_resolution_clock::now();
 		index_laa.region = index_region;
 		index_laa.run(trace);
 		t1 = std::chrono::high_resolution_clock::now();
-		printf("%20s: %0.9fs\n", "index_laa", std::chrono::duration<double>(t1 - t0).count());
+		if (args.timing) printf("%20s: %0.9fs\n", "index_laa", std::chrono::duration<double>(t1 - t0).count());
 	}
 };
 
@@ -1537,8 +1556,10 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 
 	auto t2 = std::chrono::high_resolution_clock::now();
 
-	printf("analysis:       %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
-	printf("reconstruction: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+	if (args.timing) {
+		printf("analysis:       %.9fs\n", std::chrono::duration<double>(t1 - t0).count());
+		printf("reconstruction: %.9fs\n", std::chrono::duration<double>(t2 - t1).count());
+	}
 
 	TreeStats ref = countTree(&ws->reference);
 
@@ -1558,7 +1579,7 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	}
 	accessed.total = accessed.parents + accessed.leaves;
 
-	if (false) {
+	if (args.resultsMode == ResultsModeUser) {
 		printStats("Reference", ref, ref);
 		printStats("Accessed",  ref, accessed);
 
@@ -1581,7 +1602,7 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		printResults("Normal Tree  Full",   ref, rateTree(&ws->normalTrees.fullReconstruction, &ws->reference));
 		printResults("Precise Nodes Full",  ref, rateTree(&ws->preciseTrees.fullNodes, &ws->reference));
 		printResults("Precise Tree  Full",  ref, rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
-	} else {
+	} else if (args.resultsMode == ResultsModeTable) {
 		float parents_p = floor(1000.0f * accessed.parents / ref.parents) / 10.0f;
 		float leaves_p = floor(1000.0f * accessed.leaves / ref.leaves) / 10.0f;
 		float total_p = floor(1000.0f * accessed.total / ref.total) / 10.0f;
@@ -1599,14 +1620,10 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 #include "app_grid.cpp"
 #include "app_vis.cpp"
 
-struct Arguments {
-	bool batch = false;
-	std::string filename;
-};
-
 struct Application {
 	int width, height;
 	
+	bool arguments = false;
 	bool gsa = false;
 	bool ibsa = false;
 	bool caa = false;
@@ -1625,7 +1642,6 @@ struct Application {
 };
 
 namespace {
-	Arguments args;
 	Application app;
 }
 
@@ -1634,7 +1650,52 @@ void appParseArguments(int argc, char* argv[]) {
 		std::string arg = argv[i];
 
 		if (arg == "-batch") {
-			args.batch = true;
+			bool value = true;
+			if (i + 1 < argc && argv[i+1][0] != '-') {
+				std::string param = argv[++i];
+				if (param == "true" || param == "false") {
+					value = (param == "true");
+				} else {
+					fprintf(stderr, "unknown parameter for %s: '%s'\n", arg.c_str(), param.c_str());
+					exit(1);
+				}
+			}
+			args.batch = value;
+			continue;
+		}
+
+		if (arg == "-timing") {
+			bool value = true;
+			if (i + 1 < argc && argv[i+1][0] != '-') {
+				std::string param = argv[++i];
+				if (param == "true" || param == "false") {
+					value = (param == "true");
+				} else {
+					fprintf(stderr, "unknown parameter for %s: '%s'\n", arg.c_str(), param.c_str());
+					exit(1);
+				}
+			}
+			args.timing = value;
+			continue;
+		}
+
+		if (arg == "-results") {
+			if (i + 1 >= argc || argv[i+1][0] == '-') {
+				fprintf(stderr, "missing parameter for %s\n", arg.c_str());
+				exit(1);
+			}
+			std::string param = argv[++i];
+			if (param == "none") {
+				args.resultsMode = ResultsModeNone;
+			} else if (param == "user") {
+				args.resultsMode = ResultsModeUser;
+			} else if (param == "table") {
+				args.resultsMode = ResultsModeTable;
+			} else {
+				fprintf(stderr, "unknown parameter for %s: '%s'\n", arg.c_str(), param.c_str());
+				fprintf(stderr, "expected none, user or table\n");
+				exit(1);
+			}
 			continue;
 		}
 
@@ -2110,6 +2171,9 @@ void appRenderGui(GLFWwindow* window, float delta) {
 		}
 
 		if (ImGui::BeginMenu("View")) {
+			if (ImGui::MenuItem("Arguments", "", app.arguments, true)) {
+				app.arguments = !app.arguments;
+			}
 			if (ImGui::MenuItem("Group Size Analysis", "", app.gsa, true)) {
 				app.gsa = !app.gsa;
 			}
@@ -2162,6 +2226,16 @@ void appRenderGui(GLFWwindow* window, float delta) {
 
 	app.grid.renderGui(app.workspace.get(), app.selected);
 	app.vis.renderGui(app.workspace.get(), app.selected);
+
+	if (app.arguments) {
+		ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
+
+		if (ImGui::Begin("Arguments", &app.arguments)) {
+			ImGui::Checkbox("Timing", &args.timing);
+			ImGui::Combo("Results Mode", (int*) &args.resultsMode, "None\0User\0Table\0\0");
+		}
+		ImGui::End();
+	}
 
 	if (app.workspace) {
 		AnalysisSet& as = app.workspace->analysis[app.selected.launch_id];
