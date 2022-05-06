@@ -1580,6 +1580,8 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	accessed.total = accessed.parents + accessed.leaves;
 
 	if (args.resultsMode == ResultsModeUser) {
+		printf("total individual accesses: %lld\n", ws->trace->total_individual_access_count);
+
 		printStats("Reference", ref, ref);
 		printStats("Accessed",  ref, accessed);
 
@@ -1606,8 +1608,8 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		float parents_p = floor(1000.0f * accessed.parents / ref.parents) / 10.0f;
 		float leaves_p = floor(1000.0f * accessed.leaves / ref.leaves) / 10.0f;
 		float total_p = floor(1000.0f * accessed.total / ref.total) / 10.0f;
-		printf("%20s & %05d & %5.1f\\%% & %05d & %5.1f\\%% & %05d & %5.1f\\%% \\\\\n", "", ref.parents, 100.0f, ref.leaves, 100.0f, ref.total, 100.0f);
-		printf("%20s & %05d & %5.1f\\%% & %05d & %5.1f\\%% & %05d & %5.1f\\%% \\\\\n", "Accessed", accessed.parents, parents_p, accessed.leaves, leaves_p, accessed.total, total_p);
+		printf("%20s & %5d & %5.1f\\%% & %5d & %5.1f\\%% & %5d & %5.1f\\%% \\\\\n", "", ref.parents, 100.0f, ref.leaves, 100.0f, ref.total, 100.0f);
+		printf("%20s & %5d & %5.1f\\%% & %5d & %5.1f\\%% & %5d & %5.1f\\%% \\\\\n", "Accessed", accessed.parents, parents_p, accessed.leaves, leaves_p, accessed.total, total_p);
 
 		printTable("SA", ref, countTree(&ws->preciseTrees.fullReconstruction), rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
 		printTable("CAA",  ref, countTree(&ws->normalTrees.fullNodes), rateTree(&ws->normalTrees.fullNodes, &ws->reference));
@@ -1724,7 +1726,6 @@ void appParseArguments(int argc, char* argv[]) {
 
 		auto workspace = buildWorkspace(std::move(trace));
 
-		printf("total individual accesses: %lld\n", workspace->trace->total_individual_access_count);
 		exit(0);
 	}
 }
