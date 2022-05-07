@@ -216,6 +216,8 @@ struct Visualizer {
 	int modelColorMode = 0;
 	int boxColorMode = 0;
 	float background[3] = {0.9f, 0.9f, 0.9f};
+	bool fixedSize = false;
+	bool doScreenshot = false;
 	int mode = 0;
 	int count = 0;
 
@@ -677,9 +679,40 @@ struct Visualizer {
 			glUseProgram(0);
 		}
 
+		if (doScreenshot) {
+			doScreenshot = false;
+			takeScreenshot();
+		}
+
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 		GL_CHECK();
+	}
+
+	void takeScreenshot() {
+		char time[256];
+		{ // format current local time
+			std::time_t t = std::time(nullptr);
+			if (!std::strftime(time, sizeof(time), "%Y-%m-%d_%H.%M.%S", std::localtime(&t)))
+				return;
+		}
+
+		char filename[256];
+		snprintf(filename, sizeof(filename), "screenshot_%s.png", time);
+
+		try {
+			GLubyte* buffer = new GLubyte[3 * width * height];
+
+			glPixelStorei(GL_PACK_ALIGNMENT, 1);
+			glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, buffer);
+
+			// flip image by starting at the last row and providing a negative stride
+			GLsizei stride = 3 * width;
+			GLubyte* last_row = buffer + (height - 1) * stride;
+			stbi_write_png(filename, width, height, 3, last_row, -stride);
+
+			delete[] buffer;
+		} catch (const std::bad_alloc& ignored) {}
 	}
 
 	void renderGui(Workspace* workspace, Selection& selected) {
@@ -721,12 +754,19 @@ struct Visualizer {
 				background[2] = 252.0f / 255.0f;
 			}
 
+			ImGui::Checkbox("Fixed Size", &fixedSize);
+			if (ImGui::Button("Screenshot")) doScreenshot = true;
 			ImGui::Combo("Mode", &mode, "Currently Accessed\0Current Normal Tree\0Current Precise Tree\0Full Normal Tree\0Full Precise Tree\0\0");
 			ImGui::SliderInt("Count", &count, 0, (int) aabbs.size());
 
 			ImVec2 avail = ImGui::GetContentRegionAvail();
-			targetWidth = (int) avail.x;
-			targetHeight = (int) avail.y;
+			if (fixedSize) {
+				targetWidth = 640;
+				targetHeight = 640;
+			} else {
+				targetWidth = (int) avail.x;
+				targetHeight = (int) avail.y;
+			}
 			ImVec2 size((float) width, (float) height);
 
 			if (dragging) {

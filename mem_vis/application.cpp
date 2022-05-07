@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <set>
@@ -15,6 +16,9 @@
 
 #include <defer.hpp>
 #include <mio.hpp>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 #include "meow_hash_x64_aesni.h"
 
