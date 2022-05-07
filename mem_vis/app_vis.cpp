@@ -29,6 +29,7 @@ in VDATA {
 	vec3 position;
 } vdata[];
 
+out vec3 position;
 out vec3 normal;
 
 void main() {
@@ -38,6 +39,7 @@ void main() {
 
 	for (int i = 0; i < gl_in.length(); i++) {
 		gl_Position = gl_in[i].gl_Position;
+		position = vdata[i].position;
 		normal = n;
 		EmitVertex();
 	}
@@ -48,13 +50,24 @@ void main() {
 const char* mesh_fragment_shader_source = R"DONE(
 #version 330
 
+uniform int modelColorMode;
+
 layout (location = 0) out vec3 color;
 
+in vec3 position;
 in vec3 normal;
 
 void main() {
-	color = vec3(0.5, 0.5, 0.5) + 0.5 * normal;
-	// color = vec3(gl_FragCoord.z);
+	if (modelColorMode == 1) {
+		vec3 l = normalize(-position);
+		vec3 n = normalize(normal);
+		float d = max(dot(l, n), 0.0);
+		float v = 0.05 + 0.95 * d;
+		v = clamp(v, 0.0, 1.0);
+		color = vec3(v, v, v);
+	} else {
+		color = vec3(0.5, 0.5, 0.5) + 0.5 * normal;
+	}
 }
 )DONE";
 
@@ -197,8 +210,12 @@ void matrix_multiply(float* result, float* a, float* b) {
 }
 
 struct Visualizer {
-	bool culling = true;
-	bool model = true;
+	bool culling = false;
+	bool showModel = true;
+	bool showBoxes = true;
+	int modelColorMode = 0;
+	int boxColorMode = 0;
+	float background[3] = {0.9f, 0.9f, 0.9f};
 	int mode = 0;
 	int count = 0;
 
@@ -446,9 +463,12 @@ struct Visualizer {
 
 		glViewport(0, 0, width, height);
 		if (dragging) {
-			glClearColor(0.3f, 0.8f, 0.2f, 1.0f);
+			float r = max(background[0] - 0.1f, 0.0f);
+			float g = max(background[1] - 0.1f, 0.0f);
+			float b = max(background[2] - 0.1f, 0.0f);
+			glClearColor(r, g, b, 1.0f);
 		} else {
-			glClearColor(0.0f, 0.7f, 0.3f, 1.0f);
+			glClearColor(background[0], background[1], background[2], 1.0f);
 		}
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -467,7 +487,7 @@ struct Visualizer {
 
 		float v = std::tan(0.5f * vfov);
 		float h = v * static_cast<float>(width) / static_cast<float>(height);
-		float n = 0.05f, f = 1.0f;
+		float n = 0.05f, f = 100.0f;
 
 		float projection[16] = {
 			1/h,   0,  0, 0,
@@ -514,7 +534,7 @@ struct Visualizer {
 		float model[16];
 		matrix_multiply(model, rotation, translation);
 
-		if (this->model && meshVAO) {
+		if (showModel && meshVAO) {
 			glUseProgram(meshProgram);
 
 			GLint location;
@@ -525,6 +545,9 @@ struct Visualizer {
 			location = glGetUniformLocation(meshProgram, "model");
 			glUniformMatrix4fv(location, 1, GL_TRUE, model);
 
+			location = glGetUniformLocation(meshProgram, "modelColorMode");
+			glUniform1i(location, modelColorMode);
+
 			glBindVertexArray(meshVAO);
 			glDrawElements(GL_TRIANGLES, meshIndexCount, GL_UNSIGNED_INT, 0);
 			glBindVertexArray(0);
@@ -532,7 +555,7 @@ struct Visualizer {
 			glUseProgram(0);
 		}
 
-		if (boxVAO) {
+		if (showBoxes && boxVAO) {
 			glUseProgram(boxProgram);
 
 			GLint location;
@@ -546,12 +569,36 @@ struct Visualizer {
 			std::vector<Box> boxes;
 			boxes.reserve(aabbs.size());
 
+			float baseColor[3];
+			float markColor[3];
+
+			if (boxColorMode == 1) {
+				baseColor[0] = 0.0f;
+				baseColor[1] = 0.0f;
+				baseColor[2] = 0.0f;
+				markColor[0] = 1.0f;
+				markColor[1] = 1.0f;
+				markColor[2] = 1.0f;
+			} else {
+				baseColor[0] = 1.0f;
+				baseColor[1] = 0.0f;
+				baseColor[2] = 0.0f;
+				markColor[0] = 0.0f;
+				markColor[1] = 0.0f;
+				markColor[2] = 0.0f;
+			}
+
 			for (int i = 0; i < aabbs.size(); i++) {
 				Box box;
 				box.aabb = aabbs[i];
-				box.r = 0.0f; box.g = 0.0f; box.b = 0.0f;
+				box.r = baseColor[0]; box.g = baseColor[1]; box.b = baseColor[2];
 				boxes.push_back(box);
 			}
+
+			auto markBox = [&boxes, markColor] (size_t index) {
+				Box& box = boxes.at(index);
+				box.r = markColor[0]; box.g = markColor[1]; box.b = markColor[2];
+			};
 
 			switch (mode) {
 				// Currently accessed.
@@ -560,9 +607,7 @@ struct Visualizer {
 						LinearAccessAnalysis* laa = &workspace->analysis[launch_id].nodes_laa;
 						for (uint64_t i = 0; i < boxes.size(); i++) {
 							if (laa->flags[i]) {
-								boxes[i].r = 1.0f;
-								boxes[i].g = 1.0f;
-								boxes[i].b = 1.0f;
+								markBox(i);
 							}
 						}
 					}
@@ -575,10 +620,7 @@ struct Visualizer {
 						TraceRegion* node_region = trace->find_region(0, 1);
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
-							Box& box = boxes.at(index);
-							box.r = 1.0f;
-							box.g = 1.0f;
-							box.b = 1.0f;
+							markBox(index);
 						}
 					}
 				} break;
@@ -591,10 +633,7 @@ struct Visualizer {
 						TraceRegion* node_region = trace->find_region(0, 1);
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
-							Box& box = boxes.at(index);
-							box.r = 1.0f;
-							box.g = 1.0f;
-							box.b = 1.0f;
+							markBox(index);
 						}
 					}
 				} break;
@@ -606,10 +645,7 @@ struct Visualizer {
 						TraceRegion* node_region = trace->find_region(0, 1);
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
-							Box& box = boxes.at(index);
-							box.r = 1.0f;
-							box.g = 1.0f;
-							box.b = 1.0f;
+							markBox(index);
 						}
 					}
 				} break;
@@ -622,9 +658,7 @@ struct Visualizer {
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
 							Box& box = boxes.at(index);
-							box.r = 1.0f;
-							box.g = 1.0f;
-							box.b = 1.0f;
+							markBox(index);
 						}
 					}
 				} break;
@@ -663,7 +697,30 @@ struct Visualizer {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 		if (ImGui::Begin("Visualizer", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 			ImGui::Checkbox("Culling", &culling);
-			ImGui::Checkbox("Model", &model);
+			ImGui::Checkbox("Model", &showModel);
+			ImGui::Checkbox("Boxes", &showBoxes);
+
+			ImGui::Combo("Model Color", &modelColorMode, "UV\0Basic\0\0");
+			ImGui::Combo("Box Color", &boxColorMode, "Black/Red\0White/Black\0\0");
+			ImGui::ColorEdit3("Background Color", background);
+			if (ImGui::Button("Default")) {
+				background[0] = 0.9f;
+				background[1] = 0.9f;
+				background[2] = 0.9f;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Green")) {
+				background[0] = 0.0f;
+				background[1] = 0.7f;
+				background[2] = 0.3f;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Vodka")) {
+				background[0] = 197.0f / 255.0f;
+				background[1] = 187.0f / 255.0f;
+				background[2] = 252.0f / 255.0f;
+			}
+
 			ImGui::Combo("Mode", &mode, "Currently Accessed\0Current Normal Tree\0Current Precise Tree\0Full Normal Tree\0Full Precise Tree\0\0");
 			ImGui::SliderInt("Count", &count, 0, (int) aabbs.size());
 
