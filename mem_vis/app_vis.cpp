@@ -218,7 +218,11 @@ struct Visualizer {
 	float background[3] = {0.9f, 0.9f, 0.9f};
 	bool fixedSize = false;
 	bool doScreenshot = false;
+
 	int mode = 0;
+	bool full = false;
+	bool pruned = false;
+	bool fullyCorrect = false;
 	int count = 0;
 
 	bool dragging = false;
@@ -237,6 +241,7 @@ struct Visualizer {
 	GLuint boxVBO = 0;
 	float centerX = 0.0f, centerY = 0.0f, centerZ = 0.0f;
 	std::vector<AABB> aabbs;
+	std::vector<Box> boxes;
 
 	bool framebufferInit = false, framebufferSuccess = false;
 	int targetWidth = 1024, targetHeight = 768;
@@ -568,7 +573,7 @@ struct Visualizer {
 			location = glGetUniformLocation(boxProgram, "model");
 			glUniformMatrix4fv(location, 1, GL_TRUE, model);
 
-			std::vector<Box> boxes;
+			boxes.clear();
 			boxes.reserve(aabbs.size());
 
 			float baseColor[3];
@@ -597,75 +602,97 @@ struct Visualizer {
 				boxes.push_back(box);
 			}
 
-			auto markBox = [&boxes, markColor] (size_t index) {
+			auto markBox = [this,markColor] (size_t index) {
 				Box& box = boxes.at(index);
 				box.r = markColor[0]; box.g = markColor[1]; box.b = markColor[2];
 			};
 
+			auto isFullyCorrect = [&workspace] (Node* node) {
+				auto it = workspace->reference_node_by_address.find(node->address);
+				if (it == workspace->reference_node_by_address.end()) return false;
+
+				Node* ref = it->second;
+				switch (node->type) {
+					case Node::PARENT: {
+						if (ref->type != Node::PARENT) return false;
+
+						bool connections_correct = false;
+						bool bounds_correct = false;
+
+						uint64_t nl = node->parent_data.edges[0].address;
+						uint64_t nr = node->parent_data.edges[1].address;
+						uint64_t rl = ref->parent_data.edges[0].address;
+						uint64_t rr = ref->parent_data.edges[1].address;
+
+						if ((nl == rl && nr == rr) || (nl == rr && nr == rl)) {
+							connections_correct = true;
+						}
+
+						if (node->parent_data.bounds_address == ref->parent_data.bounds_address) {
+							bounds_correct = true;
+						}
+
+						return connections_correct && bounds_correct;
+					} break;
+
+					case Node::LEAF: {
+						if (ref->type != Node::LEAF) return false;
+						return node->leaf_data.face_address == ref->leaf_data.face_address && node->leaf_data.face_count == ref->leaf_data.face_count;
+					}
+					break;
+
+					default:
+						return false;
+				}
+			};
+
 			switch (mode) {
-				// Currently accessed.
+				// Accessed.
 				case 0: {
 					if (workspace) {
-						LinearAccessAnalysis* laa = &workspace->analysis[launch_id].nodes_laa;
-						for (uint64_t i = 0; i < boxes.size(); i++) {
-							if (laa->flags[i]) {
-								markBox(i);
+						if (full) {
+							for (uint64_t j = 0; j < workspace->trace->header.launch_info_count; j++) {
+								LinearAccessAnalysis* laa = &workspace->analysis[j].nodes_laa;
+								for (uint64_t i = 0; i < boxes.size(); i++) {
+									if (laa->flags[i]) {
+										markBox(i);
+									}
+								}
+							}
+						} else {
+							LinearAccessAnalysis* laa = &workspace->analysis[launch_id].nodes_laa;
+							for (uint64_t i = 0; i < boxes.size(); i++) {
+								if (laa->flags[i]) {
+									markBox(i);
+								}
 							}
 						}
 					}
 				} break;
 
-				// Current normal tree.
-				case 1: {
+				// Normal.
+				case 1:
+				// Precise.
+				case 2:
+				{
 					if (workspace && trace) {
-						Tree* tree = &workspace->normalTrees.reconstructions[launch_id];
-						TraceRegion* node_region = trace->find_region(0, 1);
-						for (auto& node : tree->nodes) {
-							int64_t index = calculate_index(node_region, node.address);
-							markBox(index);
+						TreeSet* set = (mode == 1) ? &workspace->normalTrees : &workspace->preciseTrees;
+						Tree* tree = nullptr;
+						if (full) {
+							tree = pruned ? &set->fullReconstruction : &set->fullNodes;
+						} else {
+							tree = pruned ? &set->reconstructions[launch_id] : &set->nodes[launch_id];
 						}
-					}
-				} break;
 
-
-				// Current precise tree.
-				case 2: {
-					if (workspace && trace) {
-						Tree* tree = &workspace->preciseTrees.reconstructions[launch_id];
 						TraceRegion* node_region = trace->find_region(0, 1);
 						for (auto& node : tree->nodes) {
 							int64_t index = calculate_index(node_region, node.address);
-							markBox(index);
-						}
-					}
-				} break;
-
-				// Full normal tree.
-				case 3: {
-					if (workspace && trace) {
-						Tree* tree = &workspace->normalTrees.fullReconstruction;
-						TraceRegion* node_region = trace->find_region(0, 1);
-						for (auto& node : tree->nodes) {
-							int64_t index = calculate_index(node_region, node.address);
-							markBox(index);
-						}
-					}
-				} break;
-
-				// Full precise tree.
-				case 4: {
-					if (workspace && trace) {
-						Tree* tree = &workspace->preciseTrees.fullReconstruction;
-						TraceRegion* node_region = trace->find_region(0, 1);
-						for (auto& node : tree->nodes) {
-							int64_t index = calculate_index(node_region, node.address);
-							Box& box = boxes.at(index);
+							if (fullyCorrect && !isFullyCorrect(&node)) continue;
 							markBox(index);
 						}
 					}
 				} break;
 			}
-
 
 			glDepthMask(false);
 
@@ -712,7 +739,7 @@ struct Visualizer {
 			stbi_write_png(filename, width, height, 3, last_row, -stride);
 
 			delete[] buffer;
-		} catch (const std::bad_alloc& ignored) {}
+		} catch (const std::bad_alloc&) {}
 	}
 
 	void renderGui(Workspace* workspace, Selection& selected) {
@@ -756,7 +783,11 @@ struct Visualizer {
 
 			ImGui::Checkbox("Fixed Size", &fixedSize);
 			if (ImGui::Button("Screenshot")) doScreenshot = true;
-			ImGui::Combo("Mode", &mode, "Currently Accessed\0Current Normal Tree\0Current Precise Tree\0Full Normal Tree\0Full Precise Tree\0\0");
+
+			ImGui::Combo("Mode", &mode, "Accessed\0Normal\0Precise\0\0");
+			ImGui::Checkbox("Full Trace", &full);
+			ImGui::Checkbox("Prune Tree", &pruned);
+			ImGui::Checkbox("Fully Correct", &fullyCorrect);
 			ImGui::SliderInt("Count", &count, 0, (int) aabbs.size());
 
 			ImVec2 avail = ImGui::GetContentRegionAvail();

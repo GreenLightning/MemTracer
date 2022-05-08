@@ -24,6 +24,7 @@ target_include_directories(mem_vis PRIVATE "lib/implot")
 
 # Set Working Directory in Visual Studio.
 set_property(TARGET mem_vis PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(mem_vis PRIVATE "_CRT_SECURE_NO_WARNINGS")
 
 # OpenGL.
 find_package(OpenGL REQUIRED)

@@ -1480,6 +1480,7 @@ Tree reconstructTree(AnalysisSet* analysis, T* node_analysis) {
 }
 
 struct TreeSet {
+	std::vector<Tree> nodes;
 	std::vector<Tree> reconstructions;
 	Tree fullNodes;
 	Tree fullReconstruction;
@@ -1488,7 +1489,10 @@ struct TreeSet {
 struct Workspace {
 	std::unique_ptr<Trace> trace;
 	std::vector<AnalysisSet> analysis;
+
 	Tree reference;
+	std::unordered_map<uint64_t, Node*> reference_node_by_address;
+
 	TreeSet normalTrees;
 	TreeSet preciseTrees;
 };
@@ -1529,6 +1533,9 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	auto t1 = std::chrono::high_resolution_clock::now();
 
 	ws->reference = buildReferenceTree(ws->trace.get());
+	for (auto& node : ws->reference.nodes) {
+		ws->reference_node_by_address[node.address] = &node;
+	}
 
 	AnalysisSet* as = &ws->analysis[0];
 	Tree reconstruction = solidifyTree(reconstructTree(as, &as->caa));
@@ -1537,23 +1544,27 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 	Tree prunedPreciseReconstruction = pruneTree(&preciseReconstruction);
 
 	Tree normalAcc = reconstructTree(as, &as->caa);
-	ws->normalTrees.reconstructions.push_back(solidifyTree(normalAcc));
+	ws->normalTrees.nodes.push_back(solidifyTree(normalAcc));
+	ws->normalTrees.reconstructions.push_back(pruneTree(&ws->normalTrees.nodes[0]));
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->caa);
 		normalAcc = mergeTrees(&normalAcc, &partial);
-		ws->normalTrees.reconstructions.push_back(solidifyTree(partial));
+		ws->normalTrees.nodes.push_back(solidifyTree(partial));
+		ws->normalTrees.reconstructions.push_back(pruneTree(&ws->normalTrees.nodes[i]));
 	}
 	ws->normalTrees.fullNodes = solidifyTree(normalAcc);
 	ws->normalTrees.fullReconstruction = pruneTree(&ws->normalTrees.fullNodes);
 
 	Tree preciseAcc = reconstructTree(as, &as->sa);
-	ws->preciseTrees.reconstructions.push_back(solidifyTree(preciseAcc));
+	ws->preciseTrees.nodes.push_back(solidifyTree(preciseAcc));
+	ws->preciseTrees.reconstructions.push_back(pruneTree(&ws->preciseTrees.nodes[0]));
 	for (uint64_t i = 1; i < ws->trace->header.launch_info_count; i++) {
 		AnalysisSet* as = &ws->analysis[i];
 		Tree partial = reconstructTree(as, &as->sa);
 		preciseAcc = mergeTrees(&preciseAcc, &partial);
-		ws->preciseTrees.reconstructions.push_back(solidifyTree(partial));
+		ws->preciseTrees.nodes.push_back(solidifyTree(partial));
+		ws->preciseTrees.reconstructions.push_back(pruneTree(&ws->preciseTrees.nodes[i]));
 	}
 	ws->preciseTrees.fullNodes = solidifyTree(preciseAcc);
 	ws->preciseTrees.fullReconstruction = pruneTree(&ws->preciseTrees.fullNodes);
