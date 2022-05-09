@@ -529,7 +529,7 @@ struct Visualizer {
 		};
 
 		float rotation[16];
-		matrix_multiply(rotation, horizontal, vertical);
+		matrix_multiply(rotation, vertical, horizontal);
 
 		float translation[16] = {
 			1, 0, 0, -centerX,
