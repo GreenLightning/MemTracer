@@ -229,6 +229,7 @@ struct Visualizer {
 	bool dragging = false;
 	float horizontalAngle = 0;
 	float verticalAngle = 0;
+	float cameraMatrix[16];
 
 	GLuint meshProgram = 0;
 	GLuint boxProgram = 0;
@@ -542,6 +543,8 @@ struct Visualizer {
 		float model[16];
 		matrix_multiply(model, rotation, translation);
 
+		matrix_multiply(cameraMatrix, view, model);
+
 		if (showModel && meshVAO) {
 			glUseProgram(meshProgram);
 
@@ -795,6 +798,23 @@ struct Visualizer {
 
 			ImGui::Checkbox("Fixed Size", &fixedSize);
 			if (ImGui::Button("Screenshot")) doScreenshot = true;
+			ImGui::SameLine();
+			if (ImGui::Button("Camera")) {
+				float x1 = -cameraMatrix[3];
+				float y1 = -cameraMatrix[7];
+				float z1 = -cameraMatrix[11];
+				float x2 = cameraMatrix[0] * x1 + cameraMatrix[4] * y1 + cameraMatrix[ 8] * z1;
+				float y2 = cameraMatrix[1] * x1 + cameraMatrix[5] * y1 + cameraMatrix[ 9] * z1;
+				float z2 = cameraMatrix[2] * x1 + cameraMatrix[6] * y1 + cameraMatrix[10] * z1;
+				char buffer[1024];
+				snprintf(buffer, sizeof(buffer),
+					"position = [%f, %f, %f]\nmatrix = [\n\t%f, %f, %f,\n\t%f, %f, %f,\n\t%f, %f, %f,\n]",
+					x2, y2, z2,
+					cameraMatrix[0], cameraMatrix[4], cameraMatrix[8],
+					cameraMatrix[1], cameraMatrix[5], cameraMatrix[9],
+					cameraMatrix[2], cameraMatrix[6], cameraMatrix[10]);
+				ImGui::SetClipboardText(buffer);
+			}
 
 			ImGui::Combo("Mode", &mode, "Accessed\0Normal\0Precise\0\0");
 			ImGui::Checkbox("Full Trace", &full);
