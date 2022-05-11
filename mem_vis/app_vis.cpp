@@ -223,6 +223,7 @@ struct Visualizer {
 	bool full = false;
 	bool pruned = false;
 	bool fullyCorrect = false;
+	bool errorsOnly = false;
 	int count = 0;
 
 	bool dragging = false;
@@ -694,11 +695,22 @@ struct Visualizer {
 				} break;
 			}
 
+			if (errorsOnly) {
+				int target = 0;
+				for (int i = 0; i < boxes.size(); i++) {
+					Box box = boxes[i];
+					if (box.r == baseColor[0] && box.g == baseColor[1] && box.b == baseColor[2]) {
+						boxes[target++] = box;
+					}
+				}
+				boxes.resize(target);
+			}
+
 			glDepthMask(false);
 
 			glBindVertexArray(boxVAO);
 			glBufferData(GL_ARRAY_BUFFER, boxes.size() * sizeof(Box), boxes.data(), GL_STREAM_DRAW);
-			glDrawArrays(GL_POINTS, 0, (GLsizei) count);
+			glDrawArrays(GL_POINTS, 0, (GLsizei) (errorsOnly ? boxes.size() : count));
 			glBindVertexArray(0);
 
 			glDepthMask(true);
@@ -788,6 +800,7 @@ struct Visualizer {
 			ImGui::Checkbox("Full Trace", &full);
 			ImGui::Checkbox("Prune Tree", &pruned);
 			ImGui::Checkbox("Fully Correct", &fullyCorrect);
+			ImGui::Checkbox("Errors Only", &errorsOnly);
 			ImGui::SliderInt("Count", &count, 0, (int) aabbs.size());
 
 			ImVec2 avail = ImGui::GetContentRegionAvail();
