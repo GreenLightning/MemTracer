@@ -19,14 +19,21 @@ add_executable(mem_vis
 )
 
 target_include_directories(mem_vis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
+target_include_directories(mem_vis PRIVATE "include")
 target_include_directories(mem_vis PRIVATE "lib/imgui")
 target_include_directories(mem_vis PRIVATE "lib/implot")
 
-# Set Working Directory in Visual Studio.
-set_property(TARGET mem_vis PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(mem_vis PRIVATE "_CRT_SECURE_NO_WARNINGS")
+if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+	# Set Working Directory in Visual Studio.
+	set_property(TARGET mem_vis PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+	target_compile_definitions(mem_vis PRIVATE "_CRT_SECURE_NO_WARNINGS")
+else()
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1 -maes")
+	target_link_libraries(mem_vis "dl")
+endif()
 
 # OpenGL.
+cmake_policy(SET CMP0072 NEW)
 find_package(OpenGL REQUIRED)
 target_include_directories(mem_vis PRIVATE ${OpenGL_INCLUDE_DIR})
 target_link_libraries(mem_vis ${OPENGL_LIBRARIES})

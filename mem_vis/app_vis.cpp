@@ -470,9 +470,9 @@ struct Visualizer {
 
 		glViewport(0, 0, width, height);
 		if (dragging) {
-			float r = max(background[0] - 0.1f, 0.0f);
-			float g = max(background[1] - 0.1f, 0.0f);
-			float b = max(background[2] - 0.1f, 0.0f);
+			float r = std::max(background[0] - 0.1f, 0.0f);
+			float g = std::max(background[1] - 0.1f, 0.0f);
+			float b = std::max(background[2] - 0.1f, 0.0f);
 			glClearColor(r, g, b, 1.0f);
 		} else {
 			glClearColor(background[0], background[1], background[2], 1.0f);

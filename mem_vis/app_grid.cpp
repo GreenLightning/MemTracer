@@ -261,7 +261,7 @@ struct Grid {
 		if (ImGui::Begin("Grid Instructions")) {
 			ImGui::Text("Count: %d", this->instructions.size());
 
-			float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+			float instructionsHeight = std::max(ImGui::GetContentRegionAvail().y, 500.0f);
 			if (ImGui::BeginTable("Instructions", 7, flags, ImVec2(0.0f, instructionsHeight))) {
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);

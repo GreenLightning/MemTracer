@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -15,6 +16,10 @@
 #include <implot.h>
 
 #include <defer.hpp>
+
+// Prevent windows.h included by mio.hpp from defining min/max macros
+// conflicting with std::min/std::max.
+#define NOMINMAX
 #include <mio.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -508,8 +513,8 @@ void GroupSizeAnalysis::run(Trace* trace) {
 					infos[j].last_min = ma->addrs[j];
 					infos[j].last_max = ma->addrs[j] + instr->size;
 				} else {
-					infos[j].last_min = min(infos[j].last_min, ma->addrs[j]);
-					infos[j].last_max = max(infos[j].last_max, ma->addrs[j] + instr->size);
+					infos[j].last_min = std::min(infos[j].last_min, ma->addrs[j]);
+					infos[j].last_max = std::max(infos[j].last_max, ma->addrs[j] + instr->size);
 				}
 			}
 		}
@@ -1139,7 +1144,7 @@ Tree pruneTree(Tree* source) {
 }
 
 // Assigns types to nodes, converts to binary tree by removing extra children and cycles.
-Tree solidifyTree(Tree& source) {
+Tree solidifyTree(const Tree& source) {
 	Tree dest;
 	dest.nodes.reserve(source.nodes.size());
 
@@ -1810,7 +1815,7 @@ void Trace::renderGuiInWindow() {
 	ImGui::Text("Hash: %08X-%08X-%08X-%08X", MeowU32From(hash, 3), MeowU32From(hash, 2), MeowU32From(hash, 1), MeowU32From(hash, 0));
 	ImGui::Text("Total Count: %lld", this->total_individual_access_count);
 
-	float infosHeight = min((this->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200);
+	float infosHeight = std::min((this->header.launch_info_count + 2) * ImGui::GetFrameHeight(), 200.0f);
 	if (ImGui::BeginTable("Launch Infos", 3, flags, ImVec2(0.0f, infosHeight))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("Launch ID", ImGuiTableColumnFlags_None);
@@ -1880,7 +1885,7 @@ void Trace::renderGuiInWindow() {
 		ImGui::EndTable();
 	}
 
-	float instructionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+	float instructionsHeight = std::max(ImGui::GetContentRegionAvail().y, 500.0f);
 	if (ImGui::BeginTable("Instructions", 7, flags, ImVec2(0.0f, instructionsHeight))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_None);
@@ -1966,7 +1971,7 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title, bool* open) {
 	ImGui::SetNextWindowSize(ImVec2{700, 400}, ImGuiCond_FirstUseEver);
 
 	if (ImGui::Begin(title, open)) {
-		float estimatesHeight = max(ImGui::GetContentRegionAvail().y, 500);
+		float estimatesHeight = std::max(ImGui::GetContentRegionAvail().y, 500.0f);
 		if (ImGui::BeginTable("Estimates", 3, flags, ImVec2(0.0f, estimatesHeight))) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Inst. Index", ImGuiTableColumnFlags_None);
@@ -1986,7 +1991,7 @@ void InstructionBasedSizeAnalysis::renderGui(const char* title, bool* open) {
 			ImGui::EndTable();
 		}
 
-		float regionsHeight = max(ImGui::GetContentRegionAvail().y, 500);
+		float regionsHeight = std::max(ImGui::GetContentRegionAvail().y, 500.0f);
 		if (ImGui::BeginTable("Regions", 3, flags, ImVec2(0.0f, regionsHeight))) {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_None);
@@ -2223,7 +2228,7 @@ void appRenderGui(GLFWwindow* window, float delta) {
 	}
 
 	if (BeginMainStatusBar()) {
-		ImGui::Text(app.status.c_str());
+		ImGui::Text("%s", app.status.c_str());
 		EndMainStatusBar();
 	}
 
