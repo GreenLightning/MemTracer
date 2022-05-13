@@ -1353,8 +1353,10 @@ Tree mergeTrees(Tree* left, Tree* right) {
 		}
 	}
 
-	printf("bounds_conflict %d\n", bounds_conflict);
-	printf("leaf_conflict %d\n", leaf_conflict);
+	if (args.resultsMode == ResultsModeUser) {
+		printf("bounds_conflict %d\n", bounds_conflict);
+		printf("leaf_conflict %d\n", leaf_conflict);
+	}
 	return dest;
 }
 
@@ -1521,7 +1523,7 @@ void printTable(const char* name, TreeStats& ref, TreeStats s, TreeResults r) {
 	float leaves_p = floor(1000.0f * r.leaves_fully_correct / ref.leaves) / 10.0f;
 	auto total_c = r.parents_fully_correct + r.leaves_fully_correct;
 	float total_p = floor(1000.0f * total_c / ref.total) / 10.0f;
-	printf("%20s & %05d & %5.1f\\%% & %05d & %5.1f\\%% & %05d & %5.1f\\%% \\\\\n", name, r.parents_fully_correct, parents_p, r.leaves_fully_correct, leaves_p, total_c, total_p);
+	printf("%20s & %5d & %5.1f\\%% & %5d & %5.1f\\%% & %5d & %5.1f\\%% \\\\\n", name, r.parents_fully_correct, parents_p, r.leaves_fully_correct, leaves_p, total_c, total_p);
 }
 
 std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
@@ -1628,8 +1630,8 @@ std::unique_ptr<Workspace> buildWorkspace(std::unique_ptr<Trace> trace) {
 		float parents_p = floor(1000.0f * accessed.parents / ref.parents) / 10.0f;
 		float leaves_p = floor(1000.0f * accessed.leaves / ref.leaves) / 10.0f;
 		float total_p = floor(1000.0f * accessed.total / ref.total) / 10.0f;
-		printf("%20s & %5d & %5.1f\\%% & %5d & %5.1f\\%% & %5d & %5.1f\\%% \\\\\n", "", ref.parents, 100.0f, ref.leaves, 100.0f, ref.total, 100.0f);
-		printf("%20s & %5d & %5.1f\\%% & %5d & %5.1f\\%% & %5d & %5.1f\\%% \\\\\n", "Accessed", accessed.parents, parents_p, accessed.leaves, leaves_p, accessed.total, total_p);
+		printf("%20s & \\color{gray} %5d & \\color{gray} %5.1f\\%% & \\color{gray} %5d & \\color{gray} %5.1f\\%% & \\color{gray} %5d & \\color{gray} %5.1f\\%% \\\\\n", "", ref.parents, 100.0f, ref.leaves, 100.0f, ref.total, 100.0f);
+		printf("%20s & \\color{gray} %5d & \\color{gray} %5.1f\\%% & \\color{gray} %5d & \\color{gray} %5.1f\\%% & \\color{gray} %5d & \\color{gray} %5.1f\\%% \\\\\n", "Accessed", accessed.parents, parents_p, accessed.leaves, leaves_p, accessed.total, total_p);
 
 		printTable("SA", ref, countTree(&ws->preciseTrees.fullReconstruction), rateTree(&ws->preciseTrees.fullReconstruction, &ws->reference));
 		printTable("CAA",  ref, countTree(&ws->normalTrees.fullNodes), rateTree(&ws->normalTrees.fullNodes, &ws->reference));
