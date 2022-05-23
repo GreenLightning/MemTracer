@@ -790,10 +790,22 @@ struct Visualizer {
 				background[2] = 0.3f;
 			}
 			ImGui::SameLine();
-			if (ImGui::Button("Vodka")) {
+			if (ImGui::Button("Purple")) {
 				background[0] = 197.0f / 255.0f;
 				background[1] = 187.0f / 255.0f;
 				background[2] = 252.0f / 255.0f;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Blue")) {
+				background[0] = 103.0f / 255.0f;
+				background[1] = 180.0f / 255.0f;
+				background[2] = 232.0f / 255.0f;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Light Blue")) {
+				background[0] = 175.0f / 255.0f;
+				background[1] = 217.0f / 255.0f;
+				background[2] = 245.0f / 255.0f;
 			}
 
 			ImGui::Checkbox("Fixed Size", &fixedSize);
