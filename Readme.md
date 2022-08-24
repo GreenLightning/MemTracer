@@ -1,15 +1,16 @@
 # MemTracer
 
-Bounding Volume Hierarchy Reconstruction from Memory Traces (using Binary Instrumentation).
+Source code for my master's thesis (currently not publicly available) and the paper **Reconstructing Bounding Volume Hierarchies from Memory Traces of Ray Tracers** to be published during PG 2022.
 
 ## Overview
 
 - `rt` example ray tracer
 - `mem_trace` binary instrumentation tool
+- `mem_vis` trace analysis tool and gui
 
 ## Building
 
-Download [NVBit](https://github.com/NVlabs/NVBit/releases) and copy the `core` directory into this directory, then run CMake.
+Download [NVBit](https://github.com/NVlabs/NVBit/releases) (version 1.5.4 or later) and copy the `core` directory into this directory, then run CMake.
 
 Additional dependencies that should be installed:
 
