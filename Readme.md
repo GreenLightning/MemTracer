@@ -10,13 +10,17 @@ Source code for my master's thesis (currently not publicly available) and the pa
 
 ## Building
 
-Download [NVBit](https://github.com/NVlabs/NVBit/releases) (version 1.5.4 or later) and copy the `core` directory into this directory, then run CMake.
+Clone recursively (`git clone --recursive`) or initialize submodules after cloning (`git submodule update --init`).
 
-Additional dependencies that should be installed:
+Download [NVBit](https://github.com/NVlabs/NVBit/releases) (version 1.5.4 or later) and copy the `core` directory into this directory.
+
+Optionally, install image format libraries for the output of the example ray tracer (pbm is always available):
 
 Debian and Ubuntu: `sudo apt-get install libpng-dev libjpeg-dev libopenexr-dev`
 Arch Linux: `sudo pacman -S libpng libjpeg openexr`
 Fedora: `sudo dnf install libpng-devel libjpeg-devel openexr-devel`
+
+Run CMake.
 
 ## Running
 
