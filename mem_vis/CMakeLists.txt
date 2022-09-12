@@ -38,6 +38,10 @@ find_package(OpenGL REQUIRED)
 target_include_directories(mem_vis PRIVATE ${OpenGL_INCLUDE_DIR})
 target_link_libraries(mem_vis ${OPENGL_LIBRARIES})
 
+# GLAD.
+add_subdirectory("lib/glad")
+target_link_libraries(mem_vis glad)
+
 # GLFW and GLEW.
 set(USE_PREBUILT_LIBRARIES_DEFAULT OFF)
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
@@ -58,10 +62,6 @@ if(USE_PREBUILT_LIBRARIES)
 			debug "${CMAKE_CURRENT_SOURCE_DIR}/lib/win64/glfw3d.lib"
 			optimized "${CMAKE_CURRENT_SOURCE_DIR}/lib/win64/glfw3.lib"
 		)
-		target_link_libraries(mem_vis 
-			debug "${CMAKE_CURRENT_SOURCE_DIR}/lib/win64/glew32sd.lib"
-			optimized "${CMAKE_CURRENT_SOURCE_DIR}/lib/win64/glew32s.lib"
-		)
 	else()
 		message(SEND_ERROR "Pre-built libraries only available for Windows.")
 	endif()
@@ -71,9 +71,5 @@ else(USE_PREBUILT_LIBRARIES)
 	find_package(glfw3 REQUIRED)
 	target_include_directories(mem_vis PRIVATE ${GLFW_INCLUDE_DIR})
 	target_link_libraries(mem_vis glfw)
-
-	find_package(GLEW REQUIRED)
-	target_include_directories(mem_vis PRIVATE ${GLEW_INCLUDE_DIRS})
-	target_link_libraries(mem_vis ${GLEW_LIBRARIES})
 
 endif(USE_PREBUILT_LIBRARIES)

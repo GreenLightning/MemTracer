@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 
-#include <GL/glew.h>
+#include <glad/glad.h>
 
 #include "imgui.h"
 

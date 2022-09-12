@@ -1,6 +1,6 @@
 #pragma once
 
-#include <GL/glew.h>
+#include <glad/glad.h>
 
 #ifdef _DEBUG
 	void glCheckError(const char* filename, int line);

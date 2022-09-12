@@ -1,6 +1,6 @@
 #include <iostream>
 
-#include <GL/glew.h>
+#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
@@ -86,18 +86,8 @@ int main(int argc, char* argv[]) {
 
 	glfwMakeContextCurrent(window);
 
-	glewExperimental = GL_TRUE;
-	if (glewInit() != GLEW_OK) {
-		std::cout << "ERROR: failed to initialize GLEW" << std::endl;
-		glfwTerminate();
-		return -1;
-	}
-
-	// Ignore GL_INVALID_ENUM because GLEW still uses a deprecated function.
-	// See: https://github.com/nigels-com/glew/issues/3
-	GLenum error = glGetError();
-	if (error != GL_NO_ERROR && error != GL_INVALID_ENUM) {
-		std::cout << "ERROR: OpenGL error after GLEW initialization" << std::endl;
+	if (!gladLoadGLLoader((GLADloadproc) glfwGetProcAddress)) {
+		std::cerr << "ERROR: failed to initialize OpenGL context" << std::endl;
 		glfwTerminate();
 		return -1;
 	}
