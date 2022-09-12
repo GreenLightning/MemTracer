@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 
+# Statically link with the MSVC runtime library.
+# This setting is automatically propagated into all subdirectories.
+# NOTE: This effectively overrides USE_MSVC_RUNTIME_LIBRARY_DLL from GLFW,
+# so we set it to OFF as well.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)
+
 add_executable(mem_vis
 	"main.cpp"
 	"gl_utils.cpp"
@@ -42,34 +49,10 @@ target_link_libraries(mem_vis ${OPENGL_LIBRARIES})
 add_subdirectory("lib/glad")
 target_link_libraries(mem_vis glad)
 
-# GLFW and GLEW.
-set(USE_PREBUILT_LIBRARIES_DEFAULT OFF)
-if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-	set(USE_PREBUILT_LIBRARIES_DEFAULT ON)
-endif()
-option(USE_PREBUILT_LIBRARIES "Use a pre-built version of GLFW and GLEW" ${USE_PREBUILT_LIBRARIES_DEFAULT})
-
-if(USE_PREBUILT_LIBRARIES)
-
-	target_include_directories(mem_vis PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib/include")
-	target_compile_definitions(mem_vis PRIVATE GLEW_STATIC)
-
-	if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-		set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
-		set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /MT")
-		set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
-		target_link_libraries(mem_vis 
-			debug "${CMAKE_CURRENT_SOURCE_DIR}/lib/win64/glfw3d.lib"
-			optimized "${CMAKE_CURRENT_SOURCE_DIR}/lib/win64/glfw3.lib"
-		)
-	else()
-		message(SEND_ERROR "Pre-built libraries only available for Windows.")
-	endif()
-
-else(USE_PREBUILT_LIBRARIES)
-
-	find_package(glfw3 REQUIRED)
-	target_include_directories(mem_vis PRIVATE ${GLFW_INCLUDE_DIR})
-	target_link_libraries(mem_vis glfw)
-
-endif(USE_PREBUILT_LIBRARIES)
+# GLFW.
+set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+add_subdirectory("lib/glfw")
+target_link_libraries(mem_vis glfw)
